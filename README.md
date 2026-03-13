@@ -143,3 +143,5 @@ DAG_DIR=./nix-workflow-output nix-shell \
 https://github.com/gzbfgjf2/nix-workflow-draft/archive/main.tar.gz \
 -A visual-shell --run nw-visual
 ```
+
+![visualization](asset/visualization.png)
