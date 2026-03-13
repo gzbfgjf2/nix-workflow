@@ -1,0 +1,95 @@
+{
+  pkgs,
+}:
+rec {
+  system = builtins.currentSystem;
+  cliparser = pkgs.callPackage ./cli_parser.nix { };
+
+  preprocess =
+    arg:
+    if builtins.isString arg then
+      let
+        canonical = cliparser.parseCanonicalCliString arg;
+      in
+      {
+        inherit canonical;
+        canonicalCmd = cliparser.toCanonicalCommandString canonical;
+      }
+    # else if builtins.isAttrs arg then
+    #   {
+    #     input = arg;
+    #   }
+    else
+      throw "preprocess: expected string or attrset";
+  process =
+    {
+      canonical,
+      canonicalCmd,
+      name ? "unnamed",
+      _untracked ? null,
+    }:
+    let
+      recipeDerivation = derivation {
+        name = "${name}-nix-workflow-task-recipe";
+        inherit system;
+        PATH = pkgs.lib.makeBinPath [
+          pkgs.coreutils
+          pkgs.jq
+        ];
+
+        args = [
+          "-c"
+          ''
+            set -eu
+            mkdir -p "$out"
+            printf '%s' "$1" | jq --indent 2 '.' > "$out/recipe.json"
+          ''
+          "dummy"
+          (builtins.toJSON { inherit canonical canonicalCmd; })
+        ];
+        builder = "${pkgs.bash}/bin/bash";
+      };
+      type = "task";
+      recipeDrvPath = recipeDerivation.drvPath;
+      recipePath = recipeDerivation.outPath;
+      taskOutputPath =
+        builtins.replaceStrings
+          [ "/nix/store/" "-nix-workflow-task-recipe" ]
+          [
+            "/nix-workflow/store/"
+            ""
+          ]
+          recipeDerivation.outPath;
+      taskStatePath =
+        builtins.replaceStrings
+          [ "/nix/store/" "-nix-workflow-task-recipe" ]
+          [ "/nix-workflow/state/" "" ]
+          recipeDerivation.outPath;
+      dirName =
+        builtins.replaceStrings [ "/nix/store/" "-nix-workflow-task-recipe" ] [ "" "" ]
+          recipeDerivation.outPath;
+    in
+    {
+      __toString = self: taskOutputPath;
+      "__type__" = type;
+      id = recipePath;
+      inherit
+        name
+        recipeDrvPath
+        recipePath
+        taskOutputPath
+        taskStatePath
+        dirName
+        _untracked
+        canonical
+        canonicalCmd
+        ;
+    };
+
+  output =
+    x:
+    pkgs.lib.pipe x [
+      preprocess
+      process
+    ];
+}
