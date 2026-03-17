@@ -1,11 +1,5 @@
 let
   output = (import ../../nix-workflow).lib.output;
-  # template = (import ../25 { }).env;
-  # minidata = (import ../mini/minidata { }).env;
-  # sources = import ./npins;
-  # minidata_original = (import sources.minidata_automathtextv2_original { }).env;
-  # minidata_remember = (import sources.minidata_automathtextv2_remember { }).env;
-
   # Showcase scripts
   build_data_bin = import ./showcase/build-data {};
   train_bin = import ./showcase/train {};
@@ -14,22 +8,6 @@ let
   compare_bin = import ./showcase/compare {};
 in
 rec {
-  # # inherit minidata minidata_1;
-  #
-  # # hello_world_data = output ''
-  # #   ${minidata}/bin/minidata build hello_world
-  # # '';
-  #
-  # automathtextv2_original = output ''
-  #   ${minidata_original}/bin/minidata build automathtextv2 --kwarg=n=15_000_000
-  # '';
-  #
-  # automathtextv2_remember = output ''
-  #   ${minidata_remember}/bin/minidata build automathtextv2_remember
-  #   --kwarg=automathtextv2_original_path=${automathtextv2_original}
-  # '';
-
-  # --- Showcase pipeline ---
 
   dataset = output ''
     ${build_data_bin}/bin/build-data --name=demo --samples=500 --seed=42
