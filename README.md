@@ -52,7 +52,7 @@ These showcase scripts are mock-ups that take seconds to run and only write data
 ```nix
 let
   nw-src = builtins.fetchTarball
-    "https://github.com/gzbfgjf2/nix-workflow-draft/archive/main.tar.gz";
+    "https://github.com/gzbfgjf2/nix-workflow/archive/main.tar.gz";
   output = (import nw-src).lib.output;
 
   build_data_bin = import "${nw-src}/example/showcase/build-data" {};
@@ -132,16 +132,15 @@ rec {
 ### Run the pipeline
 
 ```sh
-nix-shell https://github.com/gzbfgjf2/nix-workflow-draft/archive/main.tar.gz \
+nix-shell https://github.com/gzbfgjf2/nix-workflow/archive/main.tar.gz \
 -A shell --run "nw run experiment.nix"
 ```
 
 ### Visualize
 
 ```sh
-DAG_DIR=./nix-workflow-output nix-shell \
-https://github.com/gzbfgjf2/nix-workflow-draft/archive/main.tar.gz \
--A visual-shell --run nw-visual
+nix-shell https://github.com/gzbfgjf2/nix-workflow/archive/main.tar.gz \
+-A shell --run "nw-visual experiment.nix"
 ```
 
 ![visualization](asset/visualization.png)

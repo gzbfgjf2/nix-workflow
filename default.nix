@@ -31,6 +31,9 @@ in
 {
   lib = nwlib;
   env = cli.env;
-  shell = cli.shell;
+  shell = pkgs.mkShell {
+    inputsFrom = [ cli.shell ];
+    packages = [ visual.bin ];
+  };
   visual-shell = visual.shell;
 }
