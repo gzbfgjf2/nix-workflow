@@ -271,7 +271,7 @@ def popen_with_stderr_forward(command: list[str], env=None) -> list[bytes]:
         while sel.get_map():
             for key, _ in sel.select():
                 pipe = cast(BinaryIO, key.fileobj)
-                data = pipe.read(1024)
+                data = pipe.read1(1024)
                 if not data:
                     sel.unregister(key.fileobj)
                     continue
