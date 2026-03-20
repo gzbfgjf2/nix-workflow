@@ -11,7 +11,7 @@ import sys
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import Any
 
 OUTPUT = "nix-workflow-output"
 NW_BASE = Path("/nix-workflow")
@@ -114,16 +114,13 @@ def drv_info(drv_path: str) -> dict:
     )
     drv = json.loads(result.stdout)
     v = next(iter(drv.values()))
-    input_drvs = {
-        k: v2["outputs"] for k, v2 in v["inputDrvs"].items()
-    }
+    input_drvs = {k: v2["outputs"] for k, v2 in v["inputDrvs"].items()}
     return {
         "system": v["system"],
         "builder": v["builder"],
         "PATH": v["env"].get("PATH", ""),
         "inputDrvs": input_drvs,
     }
-
 
 
 def derivation_resolved_add(
@@ -134,7 +131,14 @@ def derivation_resolved_add(
     info: dict,
 ) -> str:
     import re
-    recipe_data = json.dumps({"canonical": canonical_resolved, "canonicalCmd": cmd_resolved, "out": task.task_output_path})
+
+    recipe_data = json.dumps(
+        {
+            "canonical": canonical_resolved,
+            "canonicalCmd": cmd_resolved,
+            "out": task.task_output_path,
+        }
+    )
     name = f"{task.name}-resolved"
     builder = "/bin/sh"
     args = [
@@ -215,7 +219,9 @@ def parse_args():
 
     gc_parser = subparsers.add_parser("gc", help="Garbage collect")
     gc_parser.add_argument("path", type=str, help="Path to the nix file")
-    gc_parser.add_argument("attrs", nargs="+", type=str, help="Attribute names to collect")
+    gc_parser.add_argument(
+        "attrs", nargs="+", type=str, help="Attribute names to collect"
+    )
 
     subparsers.add_parser("clean", help="Remove all outputs, gc-links, and DB")
 
@@ -270,8 +276,7 @@ def popen_with_stderr_forward(command: list[str], env=None) -> list[bytes]:
 
         while sel.get_map():
             for key, _ in sel.select():
-                pipe = cast(BinaryIO, key.fileobj)
-                data = pipe.read1(1024)
+                data = os.read(key.fd, 1024)
                 if not data:
                     sel.unregister(key.fileobj)
                     continue
@@ -373,7 +378,9 @@ def build_dag(paths: list[str]):
     dag: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for path in paths:
         references = references_of(path)
-        dag[path]["in"] = set(r for r in references if r in tasks and r != path)
+        dag[path]["in"] = set(
+            r for r in references if r in tasks and r != path
+        )
         for r in references:
             if r in tasks and r != path:
                 dag[r]["out"].add(path)
@@ -414,7 +421,9 @@ def add_edges(dag, tasks):
 
 
 def resolved_recipe_build(drv_resolved_path: str) -> str:
-    stdout_lines = popen_with_stderr_forward(["nix-build", drv_resolved_path, "--no-out-link"])
+    stdout_lines = popen_with_stderr_forward(
+        ["nix-build", drv_resolved_path, "--no-out-link"]
+    )
     return stdout_lines[0].decode("utf-8", "replace").strip()
 
 
@@ -475,7 +484,11 @@ def run_workflow(path):
             if dep_id in resolved_drvs
         }
         drv_resolved_path = derivation_resolved_add(
-            task, cmd_resolved, canonical_resolved, dep_resolved_drvs, info,
+            task,
+            cmd_resolved,
+            canonical_resolved,
+            dep_resolved_drvs,
+            info,
         )
         resolved_drvs[task_id] = drv_resolved_path
 
@@ -515,14 +528,28 @@ def run_workflow(path):
         gc_link_recipe = NW_GC_LINKS / f"{task.dir_name}-recipe"
         if not gc_link_recipe.exists():
             subprocess.run(
-                ["nix-store", "--add-root", str(gc_link_recipe), "-r", task.id],
+                [
+                    "nix-store",
+                    "--add-root",
+                    str(gc_link_recipe),
+                    "-r",
+                    task.id,
+                ],
                 check=True,
                 capture_output=True,
             )
-        gc_link_resolved_recipe = NW_GC_LINKS / f"{task.dir_name}-resolved-recipe"
+        gc_link_resolved_recipe = (
+            NW_GC_LINKS / f"{task.dir_name}-resolved-recipe"
+        )
         if not gc_link_resolved_recipe.exists():
             subprocess.run(
-                ["nix-store", "--add-root", str(gc_link_resolved_recipe), "-r", resolved_drvs[task_id]],
+                [
+                    "nix-store",
+                    "--add-root",
+                    str(gc_link_resolved_recipe),
+                    "-r",
+                    resolved_drvs[task_id],
+                ],
                 check=True,
                 capture_output=True,
             )
@@ -548,7 +575,9 @@ def gc(path, attrs):
         if gc_link_recipe.exists():
             gc_link_recipe.unlink()
             print(f"Removed GC root: {gc_link_recipe}")
-        gc_link_resolved_recipe = NW_GC_LINKS / f"{task.dir_name}-resolved-recipe"
+        gc_link_resolved_recipe = (
+            NW_GC_LINKS / f"{task.dir_name}-resolved-recipe"
+        )
         if gc_link_resolved_recipe.exists():
             gc_link_resolved_recipe.unlink()
             print(f"Removed GC root: {gc_link_resolved_recipe}")
@@ -559,7 +588,9 @@ def gc(path, attrs):
     # 3. Remove content-addressed outputs if recipe was GC'd
     for task_id, task in tasks_to_gc.items():
         if Path(task.recipe_path).exists():
-            print(f"Skipping {task.name}: recipe still exists at {task.recipe_path}")
+            print(
+                f"Skipping {task.name}: recipe still exists at {task.recipe_path}"
+            )
             continue
         resolved_drv_path = drv_resolved_lookup(db, task.recipe_drv_path)
         if resolved_drv_path:
