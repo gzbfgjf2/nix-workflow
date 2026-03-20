@@ -5,14 +5,185 @@ import os
 import selectors
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 from collections import defaultdict, deque
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Self, cast
+from typing import Any, BinaryIO, cast
 
 OUTPUT = "nix-workflow-output"
+NW_BASE = Path("/nix-workflow")
+NW_STORE = NW_BASE / "store"
+NW_STATE = NW_BASE / "state"
+NW_GC_LINKS = NW_BASE / "gc-links"
+DB_PATH = NW_BASE / "db" / "db.sqlite"
+
+
+def init_db() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(exist_ok=True, parents=True)
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        result = db.execute("PRAGMA integrity_check").fetchone()
+        if result[0] != "ok":
+            raise sqlite3.DatabaseError("integrity check failed")
+    except sqlite3.DatabaseError:
+        db.close()
+        DB_PATH.unlink(missing_ok=True)
+        db = sqlite3.connect(str(DB_PATH))
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS placeholder_to_resolved (
+            placeholder_drv_path TEXT PRIMARY KEY,
+            resolved_drv_path TEXT NOT NULL
+        )"""
+    )
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS realisations (
+            resolved_drv_path TEXT PRIMARY KEY,
+            content_hash TEXT NOT NULL
+        )"""
+    )
+    db.commit()
+    return db
+
+
+def drv_resolved_lookup(
+    db: sqlite3.Connection, placeholder_drv_path: str
+) -> str | None:
+    row = db.execute(
+        "SELECT resolved_drv_path FROM placeholder_to_resolved WHERE placeholder_drv_path = ?",
+        (placeholder_drv_path,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def drv_resolved_record(
+    db: sqlite3.Connection, placeholder_drv_path: str, resolved_drv_path: str
+):
+    db.execute(
+        "INSERT OR REPLACE INTO placeholder_to_resolved (placeholder_drv_path, resolved_drv_path) VALUES (?, ?)",
+        (placeholder_drv_path, resolved_drv_path),
+    )
+    db.commit()
+
+
+def path_resolved_lookup(
+    db: sqlite3.Connection, resolved_drv_path: str
+) -> str | None:
+    row = db.execute(
+        "SELECT content_hash FROM realisations WHERE resolved_drv_path = ?",
+        (resolved_drv_path,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def path_resolved_record(
+    db: sqlite3.Connection, resolved_drv_path: str, content_hash: str
+):
+    db.execute(
+        "INSERT OR REPLACE INTO realisations (resolved_drv_path, content_hash) VALUES (?, ?)",
+        (resolved_drv_path, content_hash),
+    )
+    db.commit()
+
+
+def path_hash(path: str) -> str:
+    result = subprocess.run(
+        ["nix", "hash", "path", "--base32", path],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def cmd_resolve(canonical_cmd: str, rewrites: dict[str, str]) -> str:
+    resolved = canonical_cmd
+    for placeholder, content_path in rewrites.items():
+        resolved = resolved.replace(placeholder, content_path)
+    return resolved
+
+
+def drv_info(drv_path: str) -> dict:
+    result = subprocess.run(
+        ["nix", "derivation", "show", drv_path],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    drv = json.loads(result.stdout)
+    v = next(iter(drv.values()))
+    input_drvs = {
+        k: v2["outputs"] for k, v2 in v["inputDrvs"].items()
+    }
+    return {
+        "system": v["system"],
+        "builder": v["builder"],
+        "PATH": v["env"].get("PATH", ""),
+        "inputDrvs": input_drvs,
+    }
+
+
+
+def derivation_resolved_add(
+    task: "Task",
+    cmd_resolved: str,
+    canonical_resolved: dict,
+    dep_resolved_drvs: dict[str, list[str]],
+    info: dict,
+) -> str:
+    import re
+    recipe_data = json.dumps({"canonical": canonical_resolved, "canonicalCmd": cmd_resolved, "out": task.task_output_path})
+    name = f"{task.name}-resolved"
+    builder = "/bin/sh"
+    args = [
+        "-c",
+        'printf \'%s\' "$1" > "$out"',
+        "dummy",
+        recipe_data,
+    ]
+    nix_input_drvs = {
+        drv: {"dynamicOutputs": {}, "outputs": outs}
+        for drv, outs in dep_resolved_drvs.items()
+    }
+
+    def try_add(out_path):
+        recipe_json = {
+            "name": name,
+            "system": info["system"],
+            "builder": builder,
+            "args": args,
+            "env": {"out": out_path},
+            "inputDrvs": nix_input_drvs,
+            "inputSrcs": [],
+            "outputs": {"out": {"path": out_path}},
+        }
+        return subprocess.run(
+            ["nix", "derivation", "add"],
+            input=json.dumps(recipe_json),
+            capture_output=True,
+            text=True,
+        )
+
+    # First try with a dummy path — Nix masks out before hashing,
+    # so the "should be" path in the error is always correct
+    dummy_path = f"/nix/store/{'0' * 32}-{name}"
+    result = try_add(dummy_path)
+    if result.returncode == 0:
+        return result.stdout.strip()
+
+    # Parse correct path from error message
+    m = re.search(r"should be '(/nix/store/[^']+)'", result.stderr)
+    if not m:
+        raise RuntimeError(f"nix derivation add failed: {result.stderr}")
+    correct_path = m.group(1)
+
+    # Retry with correct path
+    result = try_add(correct_path)
+    if result.returncode != 0:
+        raise RuntimeError(f"nix derivation add retry failed: {result.stderr}")
+    return result.stdout.strip()
 
 
 @dataclass
@@ -30,7 +201,6 @@ class Task:
     _untracked: Any
     requires: set[str] | None = None
     required_by: set[str] | None = None
-    path_local: str | None = None
 
 
 def parse_args():
@@ -44,6 +214,11 @@ def parse_args():
     )
 
     gc_parser = subparsers.add_parser("gc", help="Garbage collect")
+    gc_parser.add_argument("path", type=str, help="Path to the nix file")
+    gc_parser.add_argument("attrs", nargs="+", type=str, help="Attribute names to collect")
+
+    subparsers.add_parser("clean", help="Remove all outputs, gc-links, and DB")
+
     args = parser.parse_args()
     return args
 
@@ -131,12 +306,6 @@ def nix_build(paths: list[str]):
     return built_recipe_names
 
 
-def compute_path_task_local(parent_local, task):
-    parent_local = Path(parent_local)
-    path_task_local = parent_local / (f"{task.nix_var_name}-{task.dir_name}")
-    return path_task_local
-
-
 def nix_build_tasks(tasks):
     print("setup..")
     print(tasks.keys())
@@ -145,89 +314,16 @@ def nix_build_tasks(tasks):
     return recipe_store_paths
 
 
-def nix_build_and_setup_local_output(recipe_store_paths, tasks, local_folder):
-    print(f"recipe store paths..: {recipe_store_paths}")
-    local_folder = Path(local_folder)
+def setup_local_output(tasks, rewrites):
+    local_folder = Path(OUTPUT)
     local_folder.mkdir(exist_ok=True, parents=True)
-
-    for recipe_store_path in recipe_store_paths:
-        if recipe_store_path not in tasks:
-            raise ValueError(
-                f"{recipe_store_path} is built, but it is not in tasks: {list(tasks.keys())}"
-            )
-        task = tasks[recipe_store_path]
-        # local_output_path = local_folder / (
-        #     f"{task.nix_var_name}-{task.dir_name}"
-        # )
-        local_output_path = Path(compute_path_task_local(local_folder, task))
-
-        task.path_local = str(local_output_path)
-
-        local_output_path.mkdir(exist_ok=True, parents=True)
-        with open(local_output_path / "task.json", "w") as f:
-            json.dump(asdict(task), f, indent=2, sort_keys=True)
-
-        Path(task.task_output_path).mkdir(exist_ok=True, parents=True)
-        Path(task.task_state_path).mkdir(exist_ok=True, parents=True)
-        print("setup path:", Path(task.task_output_path))
-        print("setup path:", Path(task.task_state_path))
-        indirect_gc_root = Path(
-            local_output_path / "nix-store-recipe"
-        ).resolve()
-
-        if not indirect_gc_root.exists():
-            subprocess.run(
-                [
-                    "nix-store",
-                    "--add-root",
-                    str(indirect_gc_root),
-                    "-r",
-                    task.id,
-                ],
-                check=True,
-                capture_output=True,
-            )
-        links = [
-            [task.task_output_path, (local_output_path / "output").resolve()],
-            [task.task_state_path, (local_output_path / "state").resolve()],
-        ]
-
-        for x, y in links:
-            dst = Path(y)
-            if dst.exists():
-                continue
-            # for path in sorted(y.rglob("*")):
-            #     depth = len(path.relative_to(y).parts)
-            #     print("  " * (depth - 1) + path.name)
-            try:
-                dst.symlink_to(x)
-            except Exception as e:
-                print(e)
-
-    links = []
     for task_id, task in tasks.items():
-        for id_required_by in task.required_by:
-            task_required_by = tasks[id_required_by]
-            frm = task_required_by.path_local
-            to = Path(task.path_local) / "required_by" / Path(frm).name
-            to.parent.mkdir(exist_ok=True, parents=True)
-            links.append([str(Path(frm).resolve()), str(Path(to).resolve())])
-
-        for id_requires in task.requires:
-            task_requires = tasks[id_requires]
-            frm = task_requires.path_local
-            to = Path(task.path_local) / "requires" / Path(frm).name
-            to.parent.mkdir(exist_ok=True, parents=True)
-            links.append([str(Path(frm).resolve()), str(Path(to).resolve())])
-
-    for x, y in links:
-        dst = Path(y)
-        if dst.exists():
-            continue
-        try:
-            dst.symlink_to(x)
-        except Exception as e:
-            print(e)
+        link = local_folder / task.nix_var_name
+        target = rewrites.get(task.task_output_path, task.task_output_path)
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(target)
+        print(f"{link} -> {target}")
 
 
 def extract_task_attrs(js: dict):
@@ -277,9 +373,9 @@ def build_dag(paths: list[str]):
     dag: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for path in paths:
         references = references_of(path)
-        dag[path]["in"] = set(r for r in references if r in tasks)
+        dag[path]["in"] = set(r for r in references if r in tasks and r != path)
         for r in references:
-            if r in tasks:
+            if r in tasks and r != path:
                 dag[r]["out"].add(path)
     return dag
 
@@ -317,34 +413,28 @@ def add_edges(dag, tasks):
         task.requires = requires
 
 
-def check_if_is_done(state_path):
-    if state_path.exists() and (state_path / "done").exists():
-        return True
-    return False
+def resolved_recipe_build(drv_resolved_path: str) -> str:
+    stdout_lines = popen_with_stderr_forward(["nix-build", drv_resolved_path, "--no-out-link"])
+    return stdout_lines[0].decode("utf-8", "replace").strip()
 
 
-def mark_done(state_path):
-    (state_path / "done").touch()
-
-
-def initialise_task(task: Task):
-    output_path = Path(task.task_output_path)
-    state_path = Path(task.task_state_path)
-    print(f"run {output_path}")
-
-    with open(Path(task.recipe_path) / "recipe.json", "r") as f:
-        recipe = json.load(f)
-        print(recipe)
-
+def initialise_task(resolved_recipe_path: str):
+    p = Path(resolved_recipe_path)
+    if p.is_file():
+        recipe = json.loads(p.read_text())
+    else:
+        with open(p / "recipe.json", "r") as f:
+            recipe = json.load(f)
+    print(recipe)
     command = recipe["canonicalCmd"]
     return command
 
 
-def run_task(task: Task):
-    state_path = Path(task.task_state_path)
-    if check_if_is_done(state_path):
-        return
-    commands = initialise_task(task)
+def run_task(task: Task, resolved_recipe_path: str):
+    print(f"run {task.task_output_path}")
+    Path(task.task_output_path).mkdir(exist_ok=True, parents=True)
+    Path(task.task_state_path).mkdir(exist_ok=True, parents=True)
+    commands = initialise_task(resolved_recipe_path)
     env = {
         **os.environ,
         "out": task.task_output_path,
@@ -352,43 +442,150 @@ def run_task(task: Task):
     }
     command = shlex.split(commands)
     result = popen_with_stderr_forward(command, env=env)
-    mark_done(state_path)
     print("task completed")
     return result
 
 
-def run_all_tasks(tasks):
-    local_output = Path(OUTPUT)
-    local_output.mkdir(exist_ok=True, parents=True)
-    for task in tasks:
-        run_task(task)
-
-
 def run_workflow(path):
+    db = init_db()
     eval_json_result = nix_eval(path)
     tasks: dict[str, Task] = extract_task_attrs(eval_json_result)
-    recipe_store_paths = nix_build_tasks(tasks)
+    nix_build_tasks(tasks)
     dag = build_dag(list(tasks.keys()))
     add_edges(dag, tasks)
-    nix_build_and_setup_local_output(recipe_store_paths, tasks, OUTPUT)
     ordered_tasks = topological_sort(dag)
-    run_all_tasks([tasks[k] for k in ordered_tasks])
 
+    rewrites: dict[str, str] = {}  # task_output_path -> content store path
+    resolved_drvs: dict[str, str] = {}  # task_id -> resolved .drv path
 
-def gc():
-    subprocess.run(["nix-store", "--gc"], check=True)
-    base = Path("/nix-workflow/store")
-    for output_path in base.iterdir():
-        if not output_path.is_dir():
+    for task_id in ordered_tasks:
+        task = tasks[task_id]
+        info = drv_info(task.recipe_drv_path)
+
+        # 1. Resolve command and canonical
+        cmd_resolved = cmd_resolve(task.canonical_cmd, rewrites)
+        canonical_resolved = json.loads(
+            cmd_resolve(json.dumps(task.canonical), rewrites)
+        )
+
+        # 2. Create resolved recipe .drv
+        dep_resolved_drvs = {
+            resolved_drvs[dep_id]: ["out"]
+            for dep_id in (task.requires or [])
+            if dep_id in resolved_drvs
+        }
+        drv_resolved_path = derivation_resolved_add(
+            task, cmd_resolved, canonical_resolved, dep_resolved_drvs, info,
+        )
+        resolved_drvs[task_id] = drv_resolved_path
+
+        # 3. Cache check
+        content_hash = path_resolved_lookup(db, drv_resolved_path)
+        if content_hash and (NW_STORE / content_hash).exists():
+            print(f"cache hit for {task.name}: {content_hash}")
+            rewrites[task.task_output_path] = str(NW_STORE / content_hash)
+            drv_resolved_record(db, task.recipe_drv_path, drv_resolved_path)
             continue
-        name = output_path.name
-        recipe_path = Path("/nix/store") / f"{name}-nix-workflow-task-recipe"
-        if not recipe_path.exists():
-            shutil.rmtree(output_path)
-            print(f"Removed {output_path}")
-            state_path = Path("/nix-workflow/state") / name
-            shutil.rmtree(state_path)
-            print(f"Removed {state_path}")
+
+        # 4. Build resolved recipe and run task
+        resolved_recipe_path = resolved_recipe_build(drv_resolved_path)
+        run_task(task, resolved_recipe_path)
+
+        # 5. Hash output
+        content_hash = path_hash(task.task_output_path)
+
+        # 6. Move to content path
+        content_path = str(NW_STORE / content_hash)
+        if not Path(content_path).exists():
+            shutil.move(task.task_output_path, content_path)
+        else:
+            shutil.rmtree(task.task_output_path)
+
+        # 7. Record in DB
+        path_resolved_record(db, drv_resolved_path, content_hash)
+        drv_resolved_record(db, task.recipe_drv_path, drv_resolved_path)
+
+        # 8. Update rewrites for downstream
+        rewrites[task.task_output_path] = content_path
+
+    # Create GC root symlinks
+    NW_GC_LINKS.mkdir(exist_ok=True, parents=True)
+    for task_id in ordered_tasks:
+        task = tasks[task_id]
+        gc_link_recipe = NW_GC_LINKS / f"{task.dir_name}-recipe"
+        if not gc_link_recipe.exists():
+            subprocess.run(
+                ["nix-store", "--add-root", str(gc_link_recipe), "-r", task.id],
+                check=True,
+                capture_output=True,
+            )
+        gc_link_resolved_recipe = NW_GC_LINKS / f"{task.dir_name}-resolved-recipe"
+        if not gc_link_resolved_recipe.exists():
+            subprocess.run(
+                ["nix-store", "--add-root", str(gc_link_resolved_recipe), "-r", resolved_drvs[task_id]],
+                check=True,
+                capture_output=True,
+            )
+
+    setup_local_output(tasks, rewrites)
+
+
+def gc(path, attrs):
+    db = init_db()
+    eval_json_result = nix_eval(path)
+    tasks = extract_task_attrs(eval_json_result)
+
+    # Find tasks matching the specified attr names
+    tasks_to_gc = {
+        task_id: task
+        for task_id, task in tasks.items()
+        if task.nix_var_name in attrs
+    }
+
+    # 1. Delete GC root symlinks for recipe and resolved recipe
+    for task_id, task in tasks_to_gc.items():
+        gc_link_recipe = NW_GC_LINKS / f"{task.dir_name}-recipe"
+        if gc_link_recipe.exists():
+            gc_link_recipe.unlink()
+            print(f"Removed GC root: {gc_link_recipe}")
+        gc_link_resolved_recipe = NW_GC_LINKS / f"{task.dir_name}-resolved-recipe"
+        if gc_link_resolved_recipe.exists():
+            gc_link_resolved_recipe.unlink()
+            print(f"Removed GC root: {gc_link_resolved_recipe}")
+
+    # 2. Nix garbage collection
+    subprocess.run(["nix-store", "--gc"], check=True)
+
+    # 3. Remove content-addressed outputs if recipe was GC'd
+    for task_id, task in tasks_to_gc.items():
+        if Path(task.recipe_path).exists():
+            print(f"Skipping {task.name}: recipe still exists at {task.recipe_path}")
+            continue
+        resolved_drv_path = drv_resolved_lookup(db, task.recipe_drv_path)
+        if resolved_drv_path:
+            content_hash = path_resolved_lookup(db, resolved_drv_path)
+            if content_hash:
+                content_path = NW_STORE / content_hash
+                if content_path.exists():
+                    shutil.rmtree(content_path)
+                    print(f"Removed {content_path}")
+
+
+def clean():
+    if NW_GC_LINKS.exists():
+        shutil.rmtree(NW_GC_LINKS)
+        print(f"Removed {NW_GC_LINKS}")
+    subprocess.run(["nix-store", "--gc"], check=True)
+    if NW_STORE.exists():
+        shutil.rmtree(NW_STORE)
+        print(f"Removed {NW_STORE}")
+    if DB_PATH.exists():
+        DB_PATH.unlink()
+        print(f"Removed {DB_PATH}")
+    out = Path(OUTPUT)
+    if out.exists():
+        shutil.rmtree(out)
+        print(f"Removed {out}")
 
 
 def main():
@@ -396,7 +593,9 @@ def main():
     if args.command == "run":
         run_workflow(args.path)
     elif args.command == "gc":
-        gc()
+        gc(args.path, args.attrs)
+    elif args.command == "clean":
+        clean()
 
 
 if __name__ == "__main__":

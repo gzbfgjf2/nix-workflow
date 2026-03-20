@@ -2,11 +2,15 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildGraph, listPath, readPath } from "./api-core.mjs";
+import { buildGraph, listPath, readPath, setExperimentPath } from "./api-core.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = join(__dirname, "..", "dist");
 const PORT = parseInt(process.env.PORT || "3000", 10);
+
+if (process.env.NW_EXPERIMENT) {
+  setExperimentPath(process.env.NW_EXPERIMENT);
+}
 
 const MIME_TYPES = {
   ".html": "text/html",

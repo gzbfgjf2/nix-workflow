@@ -3,24 +3,28 @@ import type { GraphNode, DirEntry } from "./types";
 
 interface Props {
   node: GraphNode;
+  linkedNodes: GraphNode[];
   onNavigateNode: (id: string) => void;
 }
 
-type View =
-  | { kind: "list" }
-  | { kind: "file"; name: string }
-  | { kind: "remote-dir"; path: string; name: string };
-
-export function FileExplorer({ node, onNavigateNode }: Props) {
-  const [view, setView] = useState<View>({ kind: "list" });
+export function FileExplorer({ node, linkedNodes, onNavigateNode }: Props) {
+  const [browsePath, setBrowsePath] = useState<string | null>(null);
 
   useEffect(() => {
-    setView({ kind: "list" });
+    setBrowsePath(null);
   }, [node.id]);
 
-  const fileEntries = Object.entries(node.files).sort(([a], [b]) =>
-    a.localeCompare(b)
-  );
+  const isOutput = node.type === "output";
+  const fields: [string, string | null | undefined][] = isOutput
+    ? [
+        ["contentHash", node.contentHash],
+        ["contentPath", node.contentPath],
+      ]
+    : [
+        ["drvPath", node.drvPath],
+        ["contentHash", node.contentHash],
+        ["contentPath", node.contentPath],
+      ];
 
   return (
     <div className="p-4">
@@ -29,118 +33,87 @@ export function FileExplorer({ node, onNavigateNode }: Props) {
         <span className="text-[11px] text-gray-400 break-all">{node.id}</span>
       </div>
 
-      {view.kind === "list" && (
-        <ul className="space-y-0.5">
-          {fileEntries.map(([name, entry]) => (
-            <li
-              key={name}
-              className="flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-[13px] hover:bg-gray-100"
-              onClick={() => {
-                if (entry.type === "file" || entry.type === "directory") {
-                  setView({ kind: "file", name });
-                } else if (entry.type === "symlink" && entry.resolvedDir) {
-                  setView({ kind: "remote-dir", path: entry.target!, name });
-                }
-              }}
-            >
-              <span className="text-base shrink-0">
-                {entry.type === "directory"
-                  ? "\u{1F4C1}"
-                  : entry.type === "symlink"
-                    ? entry.resolvedDir
-                      ? "\u{1F4C2}"
-                      : "\u{1F517}"
-                    : "\u{1F4C4}"}
-              </span>
-              <span className="font-medium text-gray-700 truncate">{name}</span>
-              <span className="text-[11px] text-gray-400 ml-auto shrink-0">{entry.type}</span>
-              {entry.type === "symlink" && entry.target && (
-                <span className="text-[11px] text-gray-400 max-w-48 truncate">&rarr; {entry.target}</span>
-              )}
-            </li>
-          ))}
-        </ul>
+      {!browsePath && (
+        <>
+          {/* Linked counterparts */}
+          {linkedNodes.length > 0 && (
+            <div className="mb-4 space-y-2">
+              <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">
+                {linkedNodes[0].type === "output" ? "CA Output" : `Resolved Recipe${linkedNodes.length > 1 ? "s" : ""}`}
+              </div>
+              {linkedNodes.map((ln) => (
+                <button
+                  key={ln.id}
+                  className="w-full text-left px-3 py-2.5 rounded-lg border border-dashed border-gray-300 bg-white hover:bg-gray-50 cursor-pointer"
+                  onClick={() => onNavigateNode(ln.id)}
+                >
+                  <div className="flex items-center justify-between mb-0.5">
+                    <div className="text-[13px] font-medium text-gray-800 truncate">
+                      {ln.label.replace(/ \(resolved\)$/, "")}
+                    </div>
+                    <span className={`text-[11px] shrink-0 ml-2 ${ln.type === "output" ? "text-blue-500" : "text-orange-500"}`}>Switch &rarr;</span>
+                  </div>
+                  {ln.contentHash && (
+                    <div className="text-[11px] text-gray-400 font-mono truncate">
+                      {ln.contentHash}
+                    </div>
+                  )}
+                  {ln.resolvedRecipe && (
+                    <div className="text-[11px] text-gray-500 font-mono truncate mt-0.5">
+                      {ln.resolvedRecipe.canonicalCmd}
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {fields.map(([key, val]) =>
+              val ? (
+                <div key={key}>
+                  <div className="text-[11px] text-gray-400">{key}</div>
+                  <div className="text-[13px] text-gray-700 break-all font-mono">{val}</div>
+                </div>
+              ) : null,
+            )}
+
+            {node.contentPath && (
+              <button
+                className="mt-3 border border-gray-300 text-gray-600 px-3 py-1.5 rounded text-[13px] cursor-pointer hover:bg-gray-100"
+                onClick={() => setBrowsePath(node.contentPath!)}
+              >
+                Browse output
+              </button>
+            )}
+          </div>
+
+          {node.resolvedRecipe && (
+            <div className="mt-4 pt-3 border-t border-gray-200">
+              <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide mb-2">
+                Resolved Recipe
+              </div>
+              <pre className="text-[12px] text-gray-600 font-mono whitespace-pre-wrap break-all bg-white rounded border border-gray-200 p-2">
+                {JSON.stringify(node.resolvedRecipe, null, 2)}
+              </pre>
+            </div>
+          )}
+        </>
       )}
 
-      {view.kind === "file" && node.files[view.name] && (
-        <div className="mt-3">
-          <BackButton onClick={() => setView({ kind: "list" })} />
-          <div className="text-sm font-semibold text-gray-900 mb-3 pb-2 border-b border-gray-200">{view.name}</div>
-          <FileContent name={view.name} entry={node.files[view.name]} onNavigateNode={onNavigateNode} />
-        </div>
-      )}
-
-      {view.kind === "remote-dir" && node.files[view.name] && (
-        <div className="mt-3">
-          <BackButton onClick={() => setView({ kind: "list" })} />
-          <div className="text-sm font-semibold text-gray-900 mb-3 pb-2 border-b border-gray-200">{view.name}</div>
-          <RemoteDir path={view.path} />
+      {browsePath && (
+        <div>
+          <button
+            className="border border-gray-300 text-gray-500 px-3 py-1 rounded text-[13px] cursor-pointer mb-3 hover:bg-gray-100"
+            onClick={() => setBrowsePath(null)}
+          >
+            &larr; Back
+          </button>
+          <RemoteDir path={browsePath} />
         </div>
       )}
     </div>
   );
-}
-
-function BackButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      className="border border-gray-300 text-gray-500 px-3 py-1 rounded text-[13px] cursor-pointer mb-3 hover:bg-gray-100"
-      onClick={onClick}
-    >
-      &larr; Back
-    </button>
-  );
-}
-
-function FileContent({
-  name,
-  entry,
-  onNavigateNode,
-}: {
-  name: string;
-  entry: { type: string; content?: string | null; children?: string[] };
-  onNavigateNode: (id: string) => void;
-}) {
-  if (entry.type === "directory" && entry.children) {
-    return (
-      <div className="text-[13px]">
-        <p className="text-gray-400 mb-2">Contents:</p>
-        <ul>
-          {entry.children.map((child) => (
-            <li
-              key={child}
-              className="py-1.5 px-2 text-xs text-gray-600 break-all rounded cursor-pointer hover:bg-gray-100 hover:text-gray-900"
-              onClick={() => onNavigateNode(child)}
-            >
-              {"\u{1F517}"} {child}
-            </li>
-          ))}
-          {entry.children.length === 0 && (
-            <li className="text-gray-400 text-[13px]">(empty)</li>
-          )}
-        </ul>
-      </div>
-    );
-  }
-
-  if (!entry.content) {
-    return <div className="text-gray-400 text-[13px]">No content available</div>;
-  }
-
-  if (name.endsWith(".json")) {
-    try {
-      const parsed = JSON.parse(entry.content);
-      return (
-        <pre className="font-mono text-xs leading-relaxed whitespace-pre-wrap break-all text-gray-600">
-          <JsonTree data={parsed} />
-        </pre>
-      );
-    } catch {
-      // fall through
-    }
-  }
-
-  return <pre className="font-mono text-xs leading-relaxed whitespace-pre-wrap break-all text-gray-600">{entry.content}</pre>;
 }
 
 function RemoteDir({ path }: { path: string }) {
@@ -180,7 +153,12 @@ function RemoteDir({ path }: { path: string }) {
     const isJson = selectedFile.name.endsWith(".json");
     return (
       <div>
-        <BackButton onClick={() => setSelectedFile(null)} />
+        <button
+          className="border border-gray-300 text-gray-500 px-3 py-1 rounded text-[13px] cursor-pointer mb-3 hover:bg-gray-100"
+          onClick={() => setSelectedFile(null)}
+        >
+          &larr; Back
+        </button>
         <div className="text-sm font-semibold text-gray-900 mb-3 pb-2 border-b border-gray-200">{selectedFile.name}</div>
         {isJson ? (
           <pre className="font-mono text-xs leading-relaxed whitespace-pre-wrap break-all text-gray-600">

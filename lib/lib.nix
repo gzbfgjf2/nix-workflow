@@ -29,6 +29,8 @@ rec {
       _untracked ? null,
     }:
     let
+      getPlaceholderStr =
+        str: (builtins.replaceStrings [ "/nix/store/" ] [ "" ] str) + "-ca-placeholder";
       recipeDerivation = derivation {
         name = "${name}-nix-workflow-task-recipe";
         inherit system;
@@ -45,21 +47,24 @@ rec {
             printf '%s' "$1" | jq --indent 2 '.' > "$out/recipe.json"
           ''
           "dummy"
-          (builtins.toJSON { inherit canonical canonicalCmd; })
+          (builtins.toJSON {
+            inherit canonical canonicalCmd;
+            out = getPlaceholderStr (builtins.placeholder "out");
+          })
         ];
         builder = "${pkgs.bash}/bin/bash";
       };
       type = "task";
       recipeDrvPath = recipeDerivation.drvPath;
       recipePath = recipeDerivation.outPath;
-      taskOutputPath =
-        builtins.replaceStrings
-          [ "/nix/store/" "-nix-workflow-task-recipe" ]
-          [
-            "/nix-workflow/store/"
-            ""
-          ]
-          recipeDerivation.outPath;
+      taskOutputPath = getPlaceholderStr recipeDerivation.outPath;
+      # builtins.replaceStrings
+      #   [ "/nix/store/" "-nix-workflow-task-recipe" ]
+      #   [
+      #     "/nix-workflow/store/"
+      #     ""
+      #   ]
+      #   recipeDerivation.outPath;
       taskStatePath =
         builtins.replaceStrings
           [ "/nix/store/" "-nix-workflow-task-recipe" ]
