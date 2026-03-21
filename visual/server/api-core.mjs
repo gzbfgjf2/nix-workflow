@@ -78,28 +78,24 @@ async function dbQuery(sql) {
   }
 }
 
-async function dbLookupResolvedDrv(recipeDrvPath) {
+async function dbLookupResolved(pathRecipeUnresolved) {
   const rows = await dbQuery(
-    `SELECT resolved_drv_path FROM placeholder_to_resolved WHERE placeholder_drv_path = '${recipeDrvPath}'`,
+    `SELECT path_recipe_resolved FROM placeholder_to_resolved WHERE path_recipe_unresolved = '${pathRecipeUnresolved}'`,
   );
-  return rows.length > 0 ? rows[0].resolved_drv_path : null;
+  return rows.length > 0 ? rows[0].path_recipe_resolved : null;
 }
 
-async function dbLookupContentHash(resolvedDrvPath) {
+async function dbLookupHashOutput(resolvedPath) {
   const rows = await dbQuery(
-    `SELECT content_hash FROM realisations WHERE resolved_drv_path = '${resolvedDrvPath}'`,
+    `SELECT hash_output FROM realisations WHERE path_recipe_resolved = '${resolvedPath}'`,
   );
-  return rows.length > 0 ? rows[0].content_hash : null;
+  return rows.length > 0 ? rows[0].hash_output : null;
 }
 
-async function readResolvedRecipe(drvPath) {
+async function readResolvedRecipe(resolvedPath) {
   try {
-    const { stdout } = await execFileAsync("nix", ["derivation", "show", drvPath]);
-    const drv = JSON.parse(stdout);
-    const val = Object.values(drv)[0];
-    if (val?.args?.[3]) {
-      return JSON.parse(val.args[3]);
-    }
+    const content = await readFile(resolvedPath, "utf-8");
+    return JSON.parse(content);
   } catch {}
   return null;
 }
@@ -121,25 +117,25 @@ async function buildGraphFresh() {
     tasks[attr] = value;
   }
 
-  // Build recipe nodes
-  const recipePathToAttr = {};
+  // Build path-to-attr map first (needed for edge lookup)
+  const pathRecipeUnresolvedToAttr = {};
   for (const [attr, task] of Object.entries(tasks)) {
-    const recipePath = task.recipePath;
-    const dirName = task.dirName;
-    recipePathToAttr[recipePath] = attr;
+    pathRecipeUnresolvedToAttr[task.pathRecipeUnresolved] = attr;
+  }
 
-    const recipe = await readRecipeJson(recipePath);
-    const programName = recipe?.canonical?.program
-      ? recipe.canonical.program.split("/").pop()
-      : null;
+  // Build recipe nodes
+  for (const [attr, task] of Object.entries(tasks)) {
+    const pathRecipeUnresolved = task.pathRecipeUnresolved;
 
-    // Lookup resolved drv and content hash via DB
-    const resolvedDrvPath = await dbLookupResolvedDrv(task.recipeDrvPath);
+    const recipe = await readRecipeJson(pathRecipeUnresolved);
+
+    // Lookup resolved recipe and hash via DB
+    const resolvedPath = await dbLookupResolved(pathRecipeUnresolved);
     let contentHash = null;
     let resolvedRecipe = null;
-    if (resolvedDrvPath) {
-      contentHash = await dbLookupContentHash(resolvedDrvPath);
-      resolvedRecipe = await readResolvedRecipe(resolvedDrvPath);
+    if (resolvedPath) {
+      contentHash = await dbLookupHashOutput(resolvedPath);
+      resolvedRecipe = await readResolvedRecipe(resolvedPath);
     }
     const contentPath = contentHash ? join(NW_STORE, contentHash) : null;
 
@@ -147,16 +143,16 @@ async function buildGraphFresh() {
       id: attr,
       label: attr,
       type: "recipe",
-      storePath: recipePath,
+      storePath: pathRecipeUnresolved,
       recipe: recipe || null,
       contentPath,
       contentHash,
     });
 
     // Recipe dependency edges via nix-store references
-    const refs = await nixStoreReferences(recipePath);
+    const refs = await nixStoreReferences(pathRecipeUnresolved);
     for (const ref of refs) {
-      const depAttr = recipePathToAttr[ref];
+      const depAttr = pathRecipeUnresolvedToAttr[ref];
       if (depAttr && depAttr !== attr) {
         const key = `${depAttr}->${attr}`;
         if (!edgeSet.has(key)) {
@@ -167,13 +163,13 @@ async function buildGraphFresh() {
     }
 
     // Resolved node
-    if (resolvedDrvPath) {
+    if (resolvedPath) {
       const resolvedId = `${attr}:resolved`;
       nodes.push({
         id: resolvedId,
         label: `${attr} (resolved)`,
         type: "resolved",
-        drvPath: resolvedDrvPath,
+        drvPath: resolvedPath,
         contentPath,
         contentHash,
         resolvedRecipe,
@@ -181,26 +177,21 @@ async function buildGraphFresh() {
 
       // Cross-edge
       edges.push({ from: attr, to: resolvedId, type: "cross" });
+    }
+  }
 
-      // Resolved dependency edges from inputDrvs
-      const drvRefs = await nixStoreReferences(resolvedDrvPath);
-      for (const ref of drvRefs) {
-        // Find which attr has this resolved drv
-        for (const [depAttr, depTask] of Object.entries(tasks)) {
-          if (depAttr === attr) continue;
-          const depResolvedDrv = await dbLookupResolvedDrv(depTask.recipeDrvPath);
-          if (depResolvedDrv === ref) {
-            const key = `${depAttr}:resolved->${resolvedId}`;
-            if (!edgeSet.has(key)) {
-              edgeSet.add(key);
-              edges.push({
-                from: `${depAttr}:resolved`,
-                to: resolvedId,
-                type: "resolved",
-              });
-            }
-          }
-        }
+  // Derive resolved edges from unresolved recipe edges:
+  // if unresolved_A -> unresolved_B, then resolved_A -> resolved_B
+  for (const edge of edges) {
+    if (edge.type !== "recipe") continue;
+    const fromResolved = `${edge.from}:resolved`;
+    const toResolved = `${edge.to}:resolved`;
+    // Only add if both resolved nodes exist
+    if (nodes.some((n) => n.id === fromResolved) && nodes.some((n) => n.id === toResolved)) {
+      const key = `${fromResolved}->${toResolved}`;
+      if (!edgeSet.has(key)) {
+        edgeSet.add(key);
+        edges.push({ from: fromResolved, to: toResolved, type: "resolved" });
       }
     }
   }

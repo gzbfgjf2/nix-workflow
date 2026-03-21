@@ -55,8 +55,8 @@ rec {
         builder = "${pkgs.bash}/bin/bash";
       };
       type = "task";
-      recipeDrvPath = recipeDerivation.drvPath;
-      recipePath = recipeDerivation.outPath;
+      pathRecipeUnresolvedDrv = recipeDerivation.drvPath;
+      pathRecipeUnresolved = recipeDerivation.outPath;
       taskOutputPath = getPlaceholderStr recipeDerivation.outPath;
       # builtins.replaceStrings
       #   [ "/nix/store/" "-nix-workflow-task-recipe" ]
@@ -77,11 +77,11 @@ rec {
     {
       __toString = self: taskOutputPath;
       "__type__" = type;
-      id = recipePath;
+      id = pathRecipeUnresolved;
       inherit
         name
-        recipeDrvPath
-        recipePath
+        pathRecipeUnresolvedDrv
+        pathRecipeUnresolved
         taskOutputPath
         taskStatePath
         dirName

@@ -31,6 +31,7 @@ in
 {
   lib = nwlib;
   env = cli.env;
+  testEnv = cli.testEnv;
   shell = pkgs.mkShell {
     inputsFrom = [ cli.shell ];
     packages = [ visual.bin ];
