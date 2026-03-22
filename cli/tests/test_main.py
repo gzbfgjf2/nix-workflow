@@ -17,7 +17,10 @@ def test_cmd_resolve_multiple():
     result = cmd_resolve(
         "/bin/run --a=aaa-placeholder --b=bbb-placeholder", rewrites
     )
-    assert result == "/bin/run --a=/nix-workflow/store/h1 --b=/nix-workflow/store/h2"
+    assert (
+        result
+        == "/bin/run --a=/nix-workflow/store/h1 --b=/nix-workflow/store/h2"
+    )
 
 
 def test_cmd_resolve_no_rewrites():

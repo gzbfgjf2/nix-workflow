@@ -684,7 +684,10 @@ def prune(paths):
 
     # 6. Remove content store entries not referenced by remaining DB
     keep_hashes = {
-        h for (h,) in db.execute("SELECT hash_output FROM realisations").fetchall()
+        h
+        for (h,) in db.execute(
+            "SELECT hash_output FROM realisations"
+        ).fetchall()
     }
     if NW_STORE.exists():
         for entry in NW_STORE.iterdir():
