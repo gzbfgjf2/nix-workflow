@@ -1,17 +1,14 @@
 let
-  output = (import ../../nix-workflow).lib.output;
-  # template = (import ../25 { }).env;
-  # minidata = (import ../mini/minidata { }).env;
-  # sources = import ./npins;
-  # minidata_original = (import sources.minidata_automathtextv2_original { }).env;
-  # minidata_remember = (import sources.minidata_automathtextv2_remember { }).env;
+  nw = import ../../nix-workflow;
+  output = nw.lib.output;
+  pkgs = import (import ../../nix-workflow/npins)."nixos-25.11" {};
 
   # Showcase scripts
-  build_data_bin = import ./showcase/build-data {};
-  train_bin = import ./showcase/train {};
-  inference_bin = import ./showcase/inference {};
-  evaluate_bin = import ./showcase/evaluate {};
-  compare_bin = import ./showcase/compare {};
+  build_data_bin = import ./showcase/build-data { inherit pkgs; };
+  train_bin = import ./showcase/train { inherit pkgs; };
+  inference_bin = import ./showcase/inference { inherit pkgs; };
+  evaluate_bin = import ./showcase/evaluate { inherit pkgs; };
+  compare_bin = import ./showcase/compare { inherit pkgs; };
 in
 rec {
   # # inherit minidata minidata_1;

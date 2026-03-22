@@ -13,7 +13,7 @@ dependencies = []
 dev = ["pytest", "ruff"]
 
 [project.scripts]
-nw = "nw:main"
+nw = "nw.main:main"
 
 [build-system]
 requires = ["uv_build>=0.8.23,<0.9.0"]
