@@ -97,4 +97,15 @@ rec {
       preprocess
       process
     ];
+
+  static =
+    { path, hash, info ? null }:
+    let
+      taskOutputPath = "/nix-workflow/store/${hash}";
+    in
+    {
+      __toString = self: taskOutputPath;
+      "__type__" = "static";
+      inherit path hash info taskOutputPath;
+    };
 }

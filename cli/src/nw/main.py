@@ -246,7 +246,7 @@ def nix_eval(path: str):
         "-f",
         path,
         "--apply",
-        'attr: builtins.mapAttrs (_: w: builtins.removeAttrs w ["__toString"]) attr',
+        'attr: builtins.mapAttrs (_: w: if w ? "__toString" then builtins.removeAttrs w ["__toString"] else w) attr',
         "--json",
     ]
     print(f"nix eval command:\n{' '.join(command)}")
@@ -329,7 +329,7 @@ def nix_build_tasks(tasks):
     return recipe_store_paths
 
 
-def setup_local_output(tasks, rewrites):
+def setup_local_output(tasks, rewrites, statics=None):
     local_folder = Path(OUTPUT)
     local_folder.mkdir(exist_ok=True, parents=True)
     for task_id, task in tasks.items():
@@ -339,6 +339,39 @@ def setup_local_output(tasks, rewrites):
             link.unlink()
         link.symlink_to(target)
         print(f"{link} -> {target}")
+    for static in (statics or {}).values():
+        link = local_folder / static.nix_var_name
+        target = static.task_output_path
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(target)
+        print(f"{link} -> {target}")
+
+
+@dataclass
+class Static:
+    name: str
+    path: str
+    hash: str
+    info: Any
+    task_output_path: str
+    nix_var_name: str
+
+
+def extract_static_attrs(js: dict) -> dict[str, Static]:
+    statics = {}
+    for attr, value in js.items():
+        if value.get("__type__") == "static":
+            s = Static(
+                name=attr,
+                path=value["path"],
+                hash=value["hash"],
+                info=value.get("info"),
+                task_output_path=value["taskOutputPath"],
+                nix_var_name=attr,
+            )
+            statics[attr] = s
+    return statics
 
 
 def extract_task_attrs(js: dict):
@@ -467,9 +500,36 @@ def run_task(task: Task, path_recipe_resolved: str):
     return result
 
 
+def process_statics(statics: dict[str, Static], rewrites: dict[str, str]):
+    NW_STORE.mkdir(exist_ok=True, parents=True)
+    for name, static in statics.items():
+        store_path = Path(static.task_output_path)
+        if store_path.exists():
+            print(f"static '{name}': already in store at {store_path}")
+            rewrites[static.task_output_path] = str(store_path)
+            continue
+
+        source = Path(static.path)
+        if not source.exists():
+            raise FileNotFoundError(
+                f"static '{name}': source path does not exist: {static.path}"
+            )
+
+        computed_hash = path_hash(static.path)
+        if computed_hash != static.hash:
+            raise ValueError(
+                f"static '{name}': hash mismatch — declared {static.hash}, computed {computed_hash}"
+            )
+
+        shutil.copytree(str(source), str(store_path)) if source.is_dir() else shutil.copy2(str(source), str(store_path))
+        print(f"static '{name}': copied {static.path} -> {store_path}")
+        rewrites[static.task_output_path] = str(store_path)
+
+
 def run_workflow(path):
     db = init_db()
     eval_json_result = nix_eval(path)
+    statics: dict[str, Static] = extract_static_attrs(eval_json_result)
     tasks: dict[str, Task] = extract_task_attrs(eval_json_result)
     nix_build_tasks(tasks)
     dag = build_dag(list(tasks.keys()))
@@ -477,6 +537,7 @@ def run_workflow(path):
     ordered_tasks = topological_sort(dag)
 
     rewrites: dict[str, str] = {}  # task_output_path -> content store path
+    process_statics(statics, rewrites)
     resolved_recipe_drvs: dict[str, str] = {}  # task_id -> resolved .drv path
 
     for task_id in ordered_tasks:
@@ -571,7 +632,7 @@ def run_workflow(path):
                 capture_output=True,
             )
 
-    setup_local_output(tasks, rewrites)
+    setup_local_output(tasks, rewrites, statics)
 
 
 def gc(path, attrs):
@@ -638,15 +699,19 @@ def gc(path, attrs):
 def prune(paths):
     db = init_db()
 
-    # 1. Collect all tasks from all experiment files
+    # 1. Collect all tasks and statics from all experiment files
     keep_unresolved = set()
     keep_dir_names = set()
+    keep_static_hashes = set()
     for path in paths:
         eval_json_result = nix_eval(path)
         tasks = extract_task_attrs(eval_json_result)
         for task in tasks.values():
             keep_unresolved.add(task.path_recipe_unresolved)
             keep_dir_names.add(task.dir_name)
+        statics = extract_static_attrs(eval_json_result)
+        for static in statics.values():
+            keep_static_hashes.add(static.hash)
 
     # 2. Remove GC root symlinks not belonging to kept tasks
     keep_gc_names = set()
@@ -682,13 +747,13 @@ def prune(paths):
     # 5. Nix garbage collection
     subprocess.run(["nix-store", "--gc"], check=True)
 
-    # 6. Remove content store entries not referenced by remaining DB
+    # 6. Remove content store entries not referenced by remaining DB or statics
     keep_hashes = {
         h
         for (h,) in db.execute(
             "SELECT hash_output FROM realisations"
         ).fetchall()
-    }
+    } | keep_static_hashes
     if NW_STORE.exists():
         for entry in NW_STORE.iterdir():
             if entry.name not in keep_hashes:

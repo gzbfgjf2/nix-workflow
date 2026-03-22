@@ -43,3 +43,4 @@ haven't changed.
    :maxdepth: 2
 
    getting-started
+   concepts
