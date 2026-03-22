@@ -521,7 +521,9 @@ def process_statics(statics: dict[str, Static], rewrites: dict[str, str]):
                 f"static '{name}': hash mismatch — declared {static.hash}, computed {computed_hash}"
             )
 
-        shutil.copytree(str(source), str(store_path)) if source.is_dir() else shutil.copy2(str(source), str(store_path))
+        shutil.copytree(
+            str(source), str(store_path)
+        ) if source.is_dir() else shutil.copy2(str(source), str(store_path))
         print(f"static '{name}': copied {static.path} -> {store_path}")
         rewrites[static.task_output_path] = str(store_path)
 

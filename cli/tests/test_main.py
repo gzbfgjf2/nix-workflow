@@ -1,4 +1,12 @@
-from nw.main import cmd_resolve, topological_sort, extract_task_attrs
+from unittest.mock import patch
+
+from nw.main import (
+    cmd_resolve,
+    extract_static_attrs,
+    extract_task_attrs,
+    process_statics,
+    topological_sort,
+)
 
 
 def test_cmd_resolve_single():
@@ -78,3 +86,195 @@ def test_extract_task_attrs():
     assert task.name == "build-data"
     assert task.nix_var_name == "dataset"
     assert task.path_recipe_unresolved == "/nix/store/abc-recipe"
+
+
+def test_extract_static_attrs():
+    js = {
+        "my_data": {
+            "__type__": "static",
+            "path": "/data/dataset",
+            "hash": "abc123hash",
+            "info": {"description": "test dataset"},
+            "taskOutputPath": "/nix-workflow/store/abc123hash",
+        },
+        "a_task": {
+            "__type__": "task",
+            "name": "train",
+            "canonical": {},
+            "canonicalCmd": "/bin/train",
+            "pathRecipeUnresolvedDrv": "/nix/store/x.drv",
+            "pathRecipeUnresolved": "/nix/store/x-recipe",
+            "id": "/nix/store/x-recipe",
+            "taskOutputPath": "x-placeholder",
+            "taskStatePath": "/nix-workflow/state/x",
+            "dirName": "x",
+            "_untracked": None,
+        },
+        "plain": {"foo": "bar"},
+    }
+    statics = extract_static_attrs(js)
+    assert len(statics) == 1
+    s = statics["my_data"]
+    assert s.name == "my_data"
+    assert s.path == "/data/dataset"
+    assert s.hash == "abc123hash"
+    assert s.info == {"description": "test dataset"}
+    assert s.task_output_path == "/nix-workflow/store/abc123hash"
+    assert s.nix_var_name == "my_data"
+
+
+def test_extract_static_attrs_none_info():
+    js = {
+        "cfg": {
+            "__type__": "static",
+            "path": "/data/config",
+            "hash": "cfghash",
+            "taskOutputPath": "/nix-workflow/store/cfghash",
+        },
+    }
+    statics = extract_static_attrs(js)
+    assert statics["cfg"].info is None
+
+
+def test_extract_static_attrs_empty():
+    js = {
+        "a_task": {
+            "__type__": "task",
+            "name": "train",
+            "canonical": {},
+            "canonicalCmd": "/bin/train",
+            "pathRecipeUnresolvedDrv": "/nix/store/x.drv",
+            "pathRecipeUnresolved": "/nix/store/x-recipe",
+            "id": "/nix/store/x-recipe",
+            "taskOutputPath": "x-placeholder",
+            "taskStatePath": "/nix-workflow/state/x",
+            "dirName": "x",
+            "_untracked": None,
+        },
+    }
+    statics = extract_static_attrs(js)
+    assert len(statics) == 0
+
+
+def test_process_statics_skips_existing(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    existing = store / "abc123"
+    existing.mkdir()
+    (existing / "data.csv").write_text("hello")
+
+    statics = extract_static_attrs(
+        {
+            "ds": {
+                "__type__": "static",
+                "path": "/unused",
+                "hash": "abc123",
+                "taskOutputPath": str(existing),
+            },
+        }
+    )
+    rewrites = {}
+    process_statics(statics, rewrites)
+    assert rewrites[str(existing)] == str(existing)
+
+
+def test_process_statics_copies_file(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    source_file = tmp_path / "mydata.csv"
+    source_file.write_text("data")
+    target = store / "filehash"
+
+    statics = extract_static_attrs(
+        {
+            "ds": {
+                "__type__": "static",
+                "path": str(source_file),
+                "hash": "filehash",
+                "taskOutputPath": str(target),
+            },
+        }
+    )
+    rewrites = {}
+    with patch("nw.main.path_hash", return_value="filehash"):
+        with patch("nw.main.NW_STORE", store):
+            process_statics(statics, rewrites)
+    assert target.exists()
+    assert target.read_text() == "data"
+    assert rewrites[str(target)] == str(target)
+
+
+def test_process_statics_copies_directory(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    source_dir = tmp_path / "dataset"
+    source_dir.mkdir()
+    (source_dir / "a.csv").write_text("a")
+    (source_dir / "b.csv").write_text("b")
+    target = store / "dirhash"
+
+    statics = extract_static_attrs(
+        {
+            "ds": {
+                "__type__": "static",
+                "path": str(source_dir),
+                "hash": "dirhash",
+                "taskOutputPath": str(target),
+            },
+        }
+    )
+    rewrites = {}
+    with patch("nw.main.path_hash", return_value="dirhash"):
+        with patch("nw.main.NW_STORE", store):
+            process_statics(statics, rewrites)
+    assert (target / "a.csv").read_text() == "a"
+    assert (target / "b.csv").read_text() == "b"
+
+
+def test_process_statics_hash_mismatch(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    source_file = tmp_path / "data.csv"
+    source_file.write_text("data")
+    target = store / "declaredhash"
+
+    statics = extract_static_attrs(
+        {
+            "ds": {
+                "__type__": "static",
+                "path": str(source_file),
+                "hash": "declaredhash",
+                "taskOutputPath": str(target),
+            },
+        }
+    )
+    rewrites = {}
+    import pytest
+
+    with patch("nw.main.path_hash", return_value="actualhash"):
+        with patch("nw.main.NW_STORE", store):
+            with pytest.raises(ValueError, match="hash mismatch"):
+                process_statics(statics, rewrites)
+
+
+def test_process_statics_source_missing(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    target = store / "somehash"
+
+    statics = extract_static_attrs(
+        {
+            "ds": {
+                "__type__": "static",
+                "path": "/nonexistent/path",
+                "hash": "somehash",
+                "taskOutputPath": str(target),
+            },
+        }
+    )
+    rewrites = {}
+    import pytest
+
+    with patch("nw.main.NW_STORE", store):
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            process_statics(statics, rewrites)
