@@ -509,6 +509,11 @@ def process_statics(statics: dict[str, Static], rewrites: dict[str, str]):
             rewrites[static.task_output_path] = str(store_path)
             continue
 
+        if static.path is None:
+            raise FileNotFoundError(
+                f"static '{name}': not in store and no source path provided"
+            )
+
         source = Path(static.path)
         if not source.exists():
             raise FileNotFoundError(

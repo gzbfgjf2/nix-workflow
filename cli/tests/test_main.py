@@ -279,3 +279,49 @@ def test_process_statics_source_missing(tmp_path):
     with patch("nw.main.NW_STORE", store):
         with pytest.raises(FileNotFoundError, match="does not exist"):
             process_statics(statics, rewrites)
+
+
+def test_process_statics_null_path_in_store(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    existing = store / "abc123"
+    existing.mkdir()
+    (existing / "data.csv").write_text("hello")
+
+    statics = extract_static_attrs(
+        {
+            "ds": {
+                "__type__": "static",
+                "path": None,
+                "hash": "abc123",
+                "taskOutputPath": str(existing),
+            },
+        }
+    )
+    rewrites = {}
+    with patch("nw.main.NW_STORE", store):
+        process_statics(statics, rewrites)
+    assert rewrites[str(existing)] == str(existing)
+
+
+def test_process_statics_null_path_not_in_store(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    target = store / "missinghash"
+
+    statics = extract_static_attrs(
+        {
+            "ds": {
+                "__type__": "static",
+                "path": None,
+                "hash": "missinghash",
+                "taskOutputPath": str(target),
+            },
+        }
+    )
+    rewrites = {}
+    import pytest
+
+    with patch("nw.main.NW_STORE", store):
+        with pytest.raises(FileNotFoundError, match="no source path provided"):
+            process_statics(statics, rewrites)

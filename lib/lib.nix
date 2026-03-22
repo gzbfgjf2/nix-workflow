@@ -99,7 +99,7 @@ rec {
     ];
 
   static =
-    { path, hash, info ? null }:
+    { path ? null, hash, info ? null }:
     let
       taskOutputPath = "/nix-workflow/store/${hash}";
     in

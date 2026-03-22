@@ -41,3 +41,15 @@ The ``hash`` is the content hash of the file or directory. On first run,
 ``nix-workflow`` verifies the source path against the declared hash and copies
 it into the content store at ``/nix-workflow/store/{hash}``. Subsequent runs
 skip the copy if the store entry already exists.
+
+``path`` is optional. If the data is already in the store (e.g. copied by a
+previous run or by another user), you can omit it:
+
+.. code-block:: nix
+
+   my_data = static {
+     hash = "1b2m2y8AsgTpgAmY7PhCfg==...";
+   };
+
+If the hash is not found in the store and no ``path`` is provided,
+``nix-workflow`` raises an error.
