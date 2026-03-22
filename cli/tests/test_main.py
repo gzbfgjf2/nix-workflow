@@ -174,7 +174,8 @@ def test_process_statics_skips_existing(tmp_path):
         }
     )
     rewrites = {}
-    process_statics(statics, rewrites)
+    with patch("nw.main.NW_STORE", store):
+        process_statics(statics, rewrites)
     assert rewrites[str(existing)] == str(existing)
 
 
