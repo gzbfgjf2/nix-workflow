@@ -28,13 +28,15 @@ Create an ``experiment.nix``:
    let
      nw-src = builtins.fetchTarball
        "https://github.com/gzbfgjf2/nix-workflow/archive/main.tar.gz";
-     output = (import nw-src).lib.output;
+     nw = import nw-src;
+     output = nw.lib.output;
+     pkgs = import (import "${nw-src}/npins")."nixos-25.11" {};
 
-     build_data_bin = import "${nw-src}/example/showcase/build-data" {};
-     train_bin = import "${nw-src}/example/showcase/train" {};
-     inference_bin = import "${nw-src}/example/showcase/inference" {};
-     evaluate_bin = import "${nw-src}/example/showcase/evaluate" {};
-     compare_bin = import "${nw-src}/example/showcase/compare" {};
+     build_data_bin = import "${nw-src}/example/showcase/build-data" { inherit pkgs; };
+     train_bin = import "${nw-src}/example/showcase/train" { inherit pkgs; };
+     inference_bin = import "${nw-src}/example/showcase/inference" { inherit pkgs; };
+     evaluate_bin = import "${nw-src}/example/showcase/evaluate" { inherit pkgs; };
+     compare_bin = import "${nw-src}/example/showcase/compare" { inherit pkgs; };
    in
    rec {
      dataset = output ''
