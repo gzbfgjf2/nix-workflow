@@ -113,7 +113,7 @@ async function buildGraphFresh() {
   // Extract tasks from eval result
   const tasks = {};
   for (const [attr, value] of Object.entries(evalResult)) {
-    if (value?.__type__ !== "task") continue;
+    if (!["task", "static"].includes(value?.__type__)) continue;
     tasks[attr] = value;
   }
 

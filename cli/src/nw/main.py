@@ -127,22 +127,14 @@ def drv_info(drv_path: str) -> dict:
 
 
 def derivation_resolved_add(
-    task: "Task",
-    cmd_resolved: str,
-    canonical_resolved: dict,
+    name: str,
+    recipe_data: str,
     dep_resolved_recipe_drvs: dict[str, list[str]],
     info: dict,
 ) -> str:
     import re
 
-    recipe_data = json.dumps(
-        {
-            "canonical": canonical_resolved,
-            "canonicalCmd": cmd_resolved,
-            "out": task.task_output_path,
-        }
-    )
-    name = f"{task.name}-resolved"
+    name = f"{name}-resolved"
     builder = "/bin/sh"
     args = [
         "-c",
@@ -321,27 +313,20 @@ def nix_build(paths: list[str]):
     return built_recipe_names
 
 
-def nix_build_tasks(tasks):
+def nix_build_recipes(nodes):
     print("setup..")
-    print(tasks.keys())
-    drvs = list(map(lambda x: x.path_recipe_unresolved_drv, tasks.values()))
+    print(nodes.keys())
+    drvs = list(map(lambda x: x.path_recipe_unresolved_drv, nodes.values()))
     recipe_store_paths = nix_build(drvs)
     return recipe_store_paths
 
 
-def setup_local_output(tasks, rewrites, statics=None):
+def setup_local_output(nodes, rewrites):
     local_folder = Path(OUTPUT)
     local_folder.mkdir(exist_ok=True, parents=True)
-    for task_id, task in tasks.items():
-        link = local_folder / task.nix_var_name
-        target = rewrites.get(task.task_output_path, task.task_output_path)
-        if link.is_symlink():
-            link.unlink()
-        link.symlink_to(target)
-        print(f"{link} -> {target}")
-    for static in (statics or {}).values():
-        link = local_folder / static.nix_var_name
-        target = static.task_output_path
+    for node_id, node in nodes.items():
+        link = local_folder / node.nix_var_name
+        target = rewrites.get(node.task_output_path, node.task_output_path)
         if link.is_symlink():
             link.unlink()
         link.symlink_to(target)
@@ -351,11 +336,18 @@ def setup_local_output(tasks, rewrites, statics=None):
 @dataclass
 class Static:
     name: str
-    path: str
+    path: str | None
     hash: str
     info: Any
     task_output_path: str
     nix_var_name: str
+    path_recipe_unresolved_drv: str
+    path_recipe_unresolved: str
+    id: str
+    task_state_path: str
+    dir_name: str
+    requires: set[str] | None = None
+    required_by: set[str] | None = None
 
 
 def extract_static_attrs(js: dict) -> dict[str, Static]:
@@ -364,13 +356,18 @@ def extract_static_attrs(js: dict) -> dict[str, Static]:
         if value.get("__type__") == "static":
             s = Static(
                 name=attr,
-                path=value["path"],
+                path=value.get("path"),
                 hash=value["hash"],
                 info=value.get("info"),
                 task_output_path=value["taskOutputPath"],
                 nix_var_name=attr,
+                path_recipe_unresolved_drv=value["pathRecipeUnresolvedDrv"],
+                path_recipe_unresolved=value["pathRecipeUnresolved"],
+                id=value["id"],
+                task_state_path=value["taskStatePath"],
+                dir_name=value["dirName"],
             )
-            statics[attr] = s
+            statics[value["id"]] = s
     return statics
 
 
@@ -500,37 +497,37 @@ def run_task(task: Task, path_recipe_resolved: str):
     return result
 
 
-def process_statics(statics: dict[str, Static], rewrites: dict[str, str]):
+def process_static(static: Static, rewrites: dict[str, str]):
     NW_STORE.mkdir(exist_ok=True, parents=True)
-    for name, static in statics.items():
-        store_path = Path(static.task_output_path)
-        if store_path.exists():
-            print(f"static '{name}': already in store at {store_path}")
-            rewrites[static.task_output_path] = str(store_path)
-            continue
-
-        if static.path is None:
-            raise FileNotFoundError(
-                f"static '{name}': not in store and no source path provided"
-            )
-
-        source = Path(static.path)
-        if not source.exists():
-            raise FileNotFoundError(
-                f"static '{name}': source path does not exist: {static.path}"
-            )
-
-        computed_hash = path_hash(static.path)
-        if computed_hash != static.hash:
-            raise ValueError(
-                f"static '{name}': hash mismatch — declared {static.hash}, computed {computed_hash}"
-            )
-
-        shutil.copytree(
-            str(source), str(store_path)
-        ) if source.is_dir() else shutil.copy2(str(source), str(store_path))
-        print(f"static '{name}': copied {static.path} -> {store_path}")
+    store_path = NW_STORE / static.hash
+    if store_path.exists():
+        print(f"static '{static.name}': already in store at {store_path}")
         rewrites[static.task_output_path] = str(store_path)
+        return static.hash
+
+    if static.path is None:
+        raise FileNotFoundError(
+            f"static '{static.name}': not in store and no source path provided"
+        )
+
+    source = Path(static.path)
+    if not source.exists():
+        raise FileNotFoundError(
+            f"static '{static.name}': source path does not exist: {static.path}"
+        )
+
+    computed_hash = path_hash(static.path)
+    if computed_hash != static.hash:
+        raise ValueError(
+            f"static '{static.name}': hash mismatch — declared {static.hash}, computed {computed_hash}"
+        )
+
+    shutil.copytree(
+        str(source), str(store_path)
+    ) if source.is_dir() else shutil.copy2(str(source), str(store_path))
+    print(f"static '{static.name}': copied {static.path} -> {store_path}")
+    rewrites[static.task_output_path] = str(store_path)
+    return static.hash
 
 
 def run_workflow(path):
@@ -538,79 +535,131 @@ def run_workflow(path):
     eval_json_result = nix_eval(path)
     statics: dict[str, Static] = extract_static_attrs(eval_json_result)
     tasks: dict[str, Task] = extract_task_attrs(eval_json_result)
-    nix_build_tasks(tasks)
-    dag = build_dag(list(tasks.keys()))
-    add_edges(dag, tasks)
-    ordered_tasks = topological_sort(dag)
+
+    # Combine all nodes into a single dict keyed by id
+    nodes: dict[str, Task | Static] = {**tasks, **statics}
+    nix_build_recipes(nodes)
+    dag = build_dag(list(nodes.keys()))
+    add_edges(dag, nodes)
+    ordered_nodes = topological_sort(dag)
 
     rewrites: dict[str, str] = {}  # task_output_path -> content store path
-    process_statics(statics, rewrites)
-    resolved_recipe_drvs: dict[str, str] = {}  # task_id -> resolved .drv path
+    resolved_recipe_drvs: dict[str, str] = {}  # node_id -> resolved .drv path
 
-    for task_id in ordered_tasks:
-        task = tasks[task_id]
-        info = drv_info(task.path_recipe_unresolved_drv)
+    for node_id in ordered_nodes:
+        node = nodes[node_id]
+        info = drv_info(node.path_recipe_unresolved_drv)
 
-        # 1. Resolve command and canonical
-        cmd_resolved = cmd_resolve(task.canonical_cmd, rewrites)
-        canonical_resolved = json.loads(
-            cmd_resolve(json.dumps(task.canonical), rewrites)
-        )
-
-        # 2. Create resolved recipe .drv and build it
-        dep_resolved_recipe_drvs = {
-            resolved_recipe_drvs[dep_id]: ["out"]
-            for dep_id in (task.requires or [])
-            if dep_id in resolved_recipe_drvs
-        }
-        path_recipe_resolved_drv = derivation_resolved_add(
-            task,
-            cmd_resolved,
-            canonical_resolved,
-            dep_resolved_recipe_drvs,
-            info,
-        )
-        resolved_recipe_drvs[task_id] = path_recipe_resolved_drv
-        path_recipe_resolved = resolved_recipe_build(path_recipe_resolved_drv)
-
-        # 3. Cache check (keyed on built recipe paths, not drvs)
-        hash_output = path_resolved_lookup(db, path_recipe_resolved)
-        if hash_output and (NW_STORE / hash_output).exists():
-            print(f"cache hit for {task.name}: {hash_output}")
-            rewrites[task.task_output_path] = str(NW_STORE / hash_output)
-            drv_resolved_record(
-                db, task.path_recipe_unresolved, path_recipe_resolved
+        if isinstance(node, Static):
+            # Build recipe_data for static resolved recipe
+            recipe_data = json.dumps(
+                {"hash": node.hash, "out": node.task_output_path}
             )
-            continue
+            dep_resolved_recipe_drvs = {
+                resolved_recipe_drvs[dep_id]: ["out"]
+                for dep_id in (node.requires or [])
+                if dep_id in resolved_recipe_drvs
+            }
+            path_recipe_resolved_drv = derivation_resolved_add(
+                node.name,
+                recipe_data,
+                dep_resolved_recipe_drvs,
+                info,
+            )
+            resolved_recipe_drvs[node_id] = path_recipe_resolved_drv
+            path_recipe_resolved = resolved_recipe_build(
+                path_recipe_resolved_drv
+            )
 
-        # 4. Run task
-        run_task(task, path_recipe_resolved)
+            # Cache check
+            hash_output = path_resolved_lookup(db, path_recipe_resolved)
+            if hash_output and (NW_STORE / hash_output).exists():
+                print(f"cache hit for static {node.name}: {hash_output}")
+                rewrites[node.task_output_path] = str(NW_STORE / hash_output)
+                drv_resolved_record(
+                    db, node.path_recipe_unresolved, path_recipe_resolved
+                )
+                continue
 
-        # 5. Hash output from staging
-        staging = NW_STAGING / task.dir_name
-        hash_output = path_hash(str(staging))
+            # Process static: verify + copy
+            hash_output = process_static(node, rewrites)
 
-        # 6. Move staging to content store
-        content_path = str(NW_STORE / hash_output)
-        if not Path(content_path).exists():
-            shutil.move(str(staging), content_path)
+            # Record in DB
+            path_resolved_record(db, path_recipe_resolved, hash_output)
+            drv_resolved_record(
+                db, node.path_recipe_unresolved, path_recipe_resolved
+            )
+
         else:
-            shutil.rmtree(staging)
+            # Task flow
+            # 1. Resolve command and canonical
+            cmd_resolved = cmd_resolve(node.canonical_cmd, rewrites)
+            canonical_resolved = json.loads(
+                cmd_resolve(json.dumps(node.canonical), rewrites)
+            )
 
-        # 7. Record in DB (keyed on built recipe paths)
-        path_resolved_record(db, path_recipe_resolved, hash_output)
-        drv_resolved_record(
-            db, task.path_recipe_unresolved, path_recipe_resolved
-        )
+            # 2. Create resolved recipe .drv and build it
+            recipe_data = json.dumps(
+                {
+                    "canonical": canonical_resolved,
+                    "canonicalCmd": cmd_resolved,
+                    "out": node.task_output_path,
+                }
+            )
+            dep_resolved_recipe_drvs = {
+                resolved_recipe_drvs[dep_id]: ["out"]
+                for dep_id in (node.requires or [])
+                if dep_id in resolved_recipe_drvs
+            }
+            path_recipe_resolved_drv = derivation_resolved_add(
+                node.name,
+                recipe_data,
+                dep_resolved_recipe_drvs,
+                info,
+            )
+            resolved_recipe_drvs[node_id] = path_recipe_resolved_drv
+            path_recipe_resolved = resolved_recipe_build(
+                path_recipe_resolved_drv
+            )
 
-        # 8. Update rewrites for downstream
-        rewrites[task.task_output_path] = content_path
+            # 3. Cache check (keyed on built recipe paths, not drvs)
+            hash_output = path_resolved_lookup(db, path_recipe_resolved)
+            if hash_output and (NW_STORE / hash_output).exists():
+                print(f"cache hit for {node.name}: {hash_output}")
+                rewrites[node.task_output_path] = str(NW_STORE / hash_output)
+                drv_resolved_record(
+                    db, node.path_recipe_unresolved, path_recipe_resolved
+                )
+                continue
+
+            # 4. Run task
+            run_task(node, path_recipe_resolved)
+
+            # 5. Hash output from staging
+            staging = NW_STAGING / node.dir_name
+            hash_output = path_hash(str(staging))
+
+            # 6. Move staging to content store
+            content_path = str(NW_STORE / hash_output)
+            if not Path(content_path).exists():
+                shutil.move(str(staging), content_path)
+            else:
+                shutil.rmtree(staging)
+
+            # 7. Record in DB (keyed on built recipe paths)
+            path_resolved_record(db, path_recipe_resolved, hash_output)
+            drv_resolved_record(
+                db, node.path_recipe_unresolved, path_recipe_resolved
+            )
+
+            # 8. Update rewrites for downstream
+            rewrites[node.task_output_path] = content_path
 
     # Create GC root symlinks
     NW_GC_LINKS.mkdir(exist_ok=True, parents=True)
-    for task_id in ordered_tasks:
-        task = tasks[task_id]
-        gc_link_recipe = NW_GC_LINKS / f"{task.dir_name}-recipe"
+    for node_id in ordered_nodes:
+        node = nodes[node_id]
+        gc_link_recipe = NW_GC_LINKS / f"{node.dir_name}-recipe"
         if not gc_link_recipe.exists():
             subprocess.run(
                 [
@@ -618,13 +667,13 @@ def run_workflow(path):
                     "--add-root",
                     str(gc_link_recipe),
                     "-r",
-                    task.id,
+                    node.id,
                 ],
                 check=True,
                 capture_output=True,
             )
         gc_link_resolved_recipe = (
-            NW_GC_LINKS / f"{task.dir_name}-resolved-recipe"
+            NW_GC_LINKS / f"{node.dir_name}-resolved-recipe"
         )
         if not gc_link_resolved_recipe.exists():
             subprocess.run(
@@ -633,13 +682,13 @@ def run_workflow(path):
                     "--add-root",
                     str(gc_link_resolved_recipe),
                     "-r",
-                    resolved_recipe_drvs[task_id],
+                    resolved_recipe_drvs[node_id],
                 ],
                 check=True,
                 capture_output=True,
             )
 
-    setup_local_output(tasks, rewrites, statics)
+    setup_local_output(nodes, rewrites)
 
 
 def gc(path, attrs):
@@ -719,6 +768,8 @@ def prune(paths):
         statics = extract_static_attrs(eval_json_result)
         for static in statics.values():
             keep_static_hashes.add(static.hash)
+            keep_unresolved.add(static.path_recipe_unresolved)
+            keep_dir_names.add(static.dir_name)
 
     # 2. Remove GC root symlinks not belonging to kept tasks
     keep_gc_names = set()

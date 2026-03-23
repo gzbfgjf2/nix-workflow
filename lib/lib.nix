@@ -15,19 +15,11 @@ rec {
         inherit canonical;
         canonicalCmd = cliparser.toCanonicalCommandString canonical;
       }
-    # else if builtins.isAttrs arg then
-    #   {
-    #     input = arg;
-    #   }
     else
       throw "preprocess: expected string or attrset";
-  process =
-    {
-      canonical,
-      canonicalCmd,
-      name ? "unnamed",
-      _untracked ? null,
-    }:
+
+  mkRecipe =
+    { name, recipeContent }:
     let
       getPlaceholderStr =
         str: (builtins.replaceStrings [ "/nix/store/" ] [ "" ] str) + "-ca-placeholder";
@@ -47,24 +39,13 @@ rec {
             printf '%s' "$1" | jq --indent 2 '.' > "$out/recipe.json"
           ''
           "dummy"
-          (builtins.toJSON {
-            inherit canonical canonicalCmd;
-            out = getPlaceholderStr (builtins.placeholder "out");
-          })
+          (builtins.toJSON (recipeContent // { out = getPlaceholderStr (builtins.placeholder "out"); }))
         ];
         builder = "${pkgs.bash}/bin/bash";
       };
-      type = "task";
       pathRecipeUnresolvedDrv = recipeDerivation.drvPath;
       pathRecipeUnresolved = recipeDerivation.outPath;
       taskOutputPath = getPlaceholderStr recipeDerivation.outPath;
-      # builtins.replaceStrings
-      #   [ "/nix/store/" "-nix-workflow-task-recipe" ]
-      #   [
-      #     "/nix-workflow/store/"
-      #     ""
-      #   ]
-      #   recipeDerivation.outPath;
       taskStatePath =
         builtins.replaceStrings
           [ "/nix/store/" "-nix-workflow-task-recipe" ]
@@ -75,19 +56,46 @@ rec {
           recipeDerivation.outPath;
     in
     {
-      __toString = self: taskOutputPath;
-      "__type__" = type;
-      id = pathRecipeUnresolved;
       inherit
-        name
         pathRecipeUnresolvedDrv
         pathRecipeUnresolved
         taskOutputPath
         taskStatePath
         dirName
+        ;
+      id = pathRecipeUnresolved;
+    };
+
+  process =
+    {
+      canonical,
+      canonicalCmd,
+      name ? "unnamed",
+      _untracked ? null,
+    }:
+    let
+      recipe = mkRecipe {
+        inherit name;
+        recipeContent = { inherit canonical canonicalCmd; };
+      };
+      type = "task";
+    in
+    {
+      __toString = self: recipe.taskOutputPath;
+      "__type__" = type;
+      inherit
+        name
         _untracked
         canonical
         canonicalCmd
+        ;
+      inherit (recipe)
+        pathRecipeUnresolvedDrv
+        pathRecipeUnresolved
+        taskOutputPath
+        taskStatePath
+        dirName
+        id
         ;
     };
 
@@ -99,13 +107,24 @@ rec {
     ];
 
   static =
-    { path ? null, hash, info ? null }:
+    { path ? null, hash, info ? null, name ? "static" }:
     let
-      taskOutputPath = "/nix-workflow/store/${hash}";
+      recipe = mkRecipe {
+        inherit name;
+        recipeContent = { inherit hash; };
+      };
     in
     {
-      __toString = self: taskOutputPath;
+      __toString = self: recipe.taskOutputPath;
       "__type__" = "static";
-      inherit path hash info taskOutputPath;
+      inherit path hash info;
+      inherit (recipe)
+        pathRecipeUnresolvedDrv
+        pathRecipeUnresolved
+        taskOutputPath
+        taskStatePath
+        dirName
+        id
+        ;
     };
 }
