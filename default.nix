@@ -35,6 +35,9 @@ in
   shell = pkgs.mkShell {
     inputsFrom = [ cli.shell ];
     packages = [ visual.bin ];
+    shellHook = ''
+      git config core.hooksPath .githooks
+    '';
   };
   visual-shell = visual.shell;
 }

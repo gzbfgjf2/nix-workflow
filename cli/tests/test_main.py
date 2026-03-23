@@ -174,12 +174,16 @@ def test_extract_static_attrs_empty():
     assert len(statics) == 0
 
 
-def _make_static_obj(name="ds", path="/data/src", hash_val="abc123", store_base=None):
+def _make_static_obj(
+    name="ds", path="/data/src", hash_val="abc123", store_base=None
+):
     """Helper to create a Static object for process_static tests."""
     from nw.main import Static
 
     task_output_path = (
-        str(store_base / hash_val) if store_base else f"/nix-workflow/store/{hash_val}"
+        str(store_base / hash_val)
+        if store_base
+        else f"/nix-workflow/store/{hash_val}"
     )
     return Static(
         name=name,
@@ -291,9 +295,7 @@ def test_process_static_null_path_in_store(tmp_path):
     existing.mkdir()
     (existing / "data.csv").write_text("hello")
 
-    static = _make_static_obj(
-        path=None, hash_val="abc123", store_base=store
-    )
+    static = _make_static_obj(path=None, hash_val="abc123", store_base=store)
     rewrites = {}
     with patch("nw.main.NW_STORE", store):
         process_static(static, rewrites)

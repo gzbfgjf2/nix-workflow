@@ -47,7 +47,7 @@ in
   inherit env testEnv;
   shell = pkgs.mkShell {
     packages = [
-      env
+      testEnv
       pkgs.uv
       pkgs.fish
     ];
