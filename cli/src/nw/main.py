@@ -1,6 +1,7 @@
 import argparse
 import copy
 import json
+import logging
 import os
 import selectors
 import shlex
@@ -12,6 +13,8 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("nw")
 
 OUTPUT = "nix-workflow-output"
 NW_BASE = Path("/nix-workflow")
@@ -204,6 +207,9 @@ class Task:
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug logging"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     run_parser = subparsers.add_parser("run", help="Run workflow")
     run_parser.add_argument(
@@ -241,7 +247,7 @@ def nix_eval(path: str):
         'attr: builtins.mapAttrs (_: w: if w ? "__toString" then builtins.removeAttrs w ["__toString"] else w) attr',
         "--json",
     ]
-    print(f"nix eval command:\n{' '.join(command)}")
+    log.debug("nix eval: %s", " ".join(command))
     try:
         result = subprocess.run(
             command,
@@ -250,14 +256,11 @@ def nix_eval(path: str):
             text=True,
         )
     except subprocess.CalledProcessError as e:
-        print("Command failed!")
-        print("Return code:", e.returncode)
-        print("STDOUT:", e.stdout)
-        print("STDERR:", e.stderr)
+        log.debug("nix eval failed (rc=%d)\n%s", e.returncode, e.stderr)
         raise
 
     eval_json_result = json.loads(result.stdout.strip())
-    print(json.dumps(eval_json_result, indent=2))
+    log.debug("nix eval result:\n%s", json.dumps(eval_json_result, indent=2))
     return eval_json_result
 
 
@@ -294,28 +297,25 @@ def popen_with_stderr_forward(command: list[str], env=None) -> list[bytes]:
         if rc != 0:
             raise subprocess.CalledProcessError(rc, command)
     except subprocess.CalledProcessError as e:
-        print("Command failed!")
-        print("Return code:", e.returncode)
-        print("STDOUT:", e.stdout)
-        print("STDERR:", e.stderr)
+        log.debug("command failed (rc=%d)", e.returncode)
         raise
     return b"".join(stdout_chunks).splitlines()
 
 
 def nix_build(paths: list[str]):
     command = ["nix-build", *paths, "--no-out-link"]
-    print(f"command:\n{' '.join(command)}")
+    log.debug("nix-build: %s", " ".join(command))
     stdout_lines = popen_with_stderr_forward(command)
     built_recipe_names = [
         x.decode("utf-8", "replace").strip() for x in stdout_lines
     ]
-    print("nix build result", built_recipe_names)
+    log.debug("nix-build outputs: %s", built_recipe_names)
     return built_recipe_names
 
 
 def nix_build_recipes(nodes):
-    print("setup..")
-    print(nodes.keys())
+    log.info("building %d recipe(s)...", len(nodes))
+    log.debug("nodes: %s", list(nodes.keys()))
     drvs = list(map(lambda x: x.path_recipe_unresolved_drv, nodes.values()))
     recipe_store_paths = nix_build(drvs)
     return recipe_store_paths
@@ -330,7 +330,7 @@ def setup_local_output(nodes, rewrites):
         if link.is_symlink():
             link.unlink()
         link.symlink_to(target)
-        print(f"{link} -> {target}")
+        log.info("  %s -> %s", link, target)
 
 
 @dataclass
@@ -401,10 +401,7 @@ def references_of(path: str) -> set:
     try:
         out = subprocess_run(["nix-store", "--query", "--references", path])
     except subprocess.CalledProcessError as e:
-        print("Command failed!")
-        print("Return code:", e.returncode)
-        print("STDOUT:", e.stdout)
-        print("STDERR:", e.stderr)
+        log.debug("nix-store --references failed (rc=%d)", e.returncode)
         raise
 
     if not out:
@@ -474,7 +471,7 @@ def initialise_task(path_recipe_resolved: str):
     else:
         with open(p / "recipe.json", "r") as f:
             recipe = json.load(f)
-    print(recipe)
+    log.debug("recipe: %s", recipe)
     command = recipe["canonicalCmd"]
     return command
 
@@ -490,10 +487,10 @@ def run_task(task: Task, path_recipe_resolved: str):
         "state": task.task_state_path,
     }
     command = shlex.split(commands)
-    print(f"run {staging}")
-    print("running...", "\n".join(command))
+    log.info("running %s", task.name)
+    log.debug("command: %s", " ".join(command))
     result = popen_with_stderr_forward(command, env=env)
-    print("task completed")
+    log.info("%s done", task.name)
     return result
 
 
@@ -501,31 +498,31 @@ def process_static(static: Static, rewrites: dict[str, str]):
     NW_STORE.mkdir(exist_ok=True, parents=True)
     store_path = NW_STORE / static.hash
     if store_path.exists():
-        print(f"static '{static.name}': already in store at {store_path}")
+        log.debug("static '%s': already in store", static.nix_var_name)
         rewrites[static.task_output_path] = str(store_path)
         return static.hash
 
     if static.path is None:
         raise FileNotFoundError(
-            f"static '{static.name}': not in store and no source path provided"
+            f"static '{static.nix_var_name}': not in store and no source path provided"
         )
 
     source = Path(static.path)
     if not source.exists():
         raise FileNotFoundError(
-            f"static '{static.name}': source path does not exist: {static.path}"
+            f"static '{static.nix_var_name}': source path does not exist: {static.path}"
         )
 
     computed_hash = path_hash(static.path)
     if computed_hash != static.hash:
         raise ValueError(
-            f"static '{static.name}': hash mismatch — declared {static.hash}, computed {computed_hash}"
+            f"static '{static.nix_var_name}': hash mismatch — declared {static.hash}, computed {computed_hash}"
         )
 
     shutil.copytree(
         str(source), str(store_path)
     ) if source.is_dir() else shutil.copy2(str(source), str(store_path))
-    print(f"static '{static.name}': copied {static.path} -> {store_path}")
+    log.info("static '%s': copied to store", static.nix_var_name)
     rewrites[static.task_output_path] = str(store_path)
     return static.hash
 
@@ -574,7 +571,7 @@ def run_workflow(path):
             # Cache check
             hash_output = path_resolved_lookup(db, path_recipe_resolved)
             if hash_output and (NW_STORE / hash_output).exists():
-                print(f"cache hit for static {node.name}: {hash_output}")
+                log.info("cache hit: %s", node.nix_var_name)
                 rewrites[node.task_output_path] = str(NW_STORE / hash_output)
                 drv_resolved_record(
                     db, node.path_recipe_unresolved, path_recipe_resolved
@@ -625,7 +622,7 @@ def run_workflow(path):
             # 3. Cache check (keyed on built recipe paths, not drvs)
             hash_output = path_resolved_lookup(db, path_recipe_resolved)
             if hash_output and (NW_STORE / hash_output).exists():
-                print(f"cache hit for {node.name}: {hash_output}")
+                log.info("cache hit: %s", node.name)
                 rewrites[node.task_output_path] = str(NW_STORE / hash_output)
                 drv_resolved_record(
                     db, node.path_recipe_unresolved, path_recipe_resolved
@@ -688,6 +685,7 @@ def run_workflow(path):
                 capture_output=True,
             )
 
+    log.info("outputs:")
     setup_local_output(nodes, rewrites)
 
 
@@ -708,13 +706,13 @@ def gc(path, attrs):
         gc_link_recipe = NW_GC_LINKS / f"{task.dir_name}-recipe"
         if gc_link_recipe.exists():
             gc_link_recipe.unlink()
-            print(f"Removed GC root: {gc_link_recipe}")
+            log.info("removed gc root: %s", gc_link_recipe)
         gc_link_resolved_recipe = (
             NW_GC_LINKS / f"{task.dir_name}-resolved-recipe"
         )
         if gc_link_resolved_recipe.exists():
             gc_link_resolved_recipe.unlink()
-            print(f"Removed GC root: {gc_link_resolved_recipe}")
+            log.info("removed gc root: %s", gc_link_resolved_recipe)
 
     # 2. Nix garbage collection
     subprocess.run(["nix-store", "--gc"], check=True)
@@ -729,7 +727,7 @@ def gc(path, attrs):
                 "DELETE FROM placeholder_to_resolved WHERE path_recipe_unresolved = ?",
                 (unresolved,),
             )
-            print(f"Removed stale mapping: {unresolved}")
+            log.info("removed stale mapping: %s", unresolved)
 
     rows = db.execute(
         "SELECT path_recipe_resolved, hash_output FROM realisations"
@@ -740,7 +738,7 @@ def gc(path, attrs):
                 "DELETE FROM realisations WHERE path_recipe_resolved = ?",
                 (resolved,),
             )
-            print(f"Removed stale realisation: {resolved}")
+            log.info("removed stale realisation: %s", resolved)
 
     # 4. Remove orphan realisations (not linked by any unresolved recipe)
     db.execute(
@@ -780,7 +778,7 @@ def prune(paths):
         for link in NW_GC_LINKS.iterdir():
             if link.name not in keep_gc_names:
                 link.unlink()
-                print(f"Removed GC root: {link}")
+                log.info("removed gc root: %s", link)
 
     # 3. Remove DB entries not in keep set
     rows = db.execute(
@@ -792,7 +790,7 @@ def prune(paths):
                 "DELETE FROM placeholder_to_resolved WHERE path_recipe_unresolved = ?",
                 (unresolved,),
             )
-            print(f"Removed DB mapping: {unresolved}")
+            log.info("removed db mapping: %s", unresolved)
 
     # 4. Remove orphan realisations
     db.execute(
@@ -819,48 +817,50 @@ def prune(paths):
                     shutil.rmtree(entry)
                 else:
                     entry.unlink()
-                print(f"Removed store entry: {entry}")
+                log.info("removed store entry: %s", entry)
 
     # 7. Remove staging dirs not belonging to kept tasks
     if NW_STAGING.exists():
         for entry in NW_STAGING.iterdir():
             if entry.name not in keep_dir_names:
                 shutil.rmtree(entry)
-                print(f"Removed staging: {entry}")
+                log.info("removed staging: %s", entry)
 
     # 8. Remove state dirs not belonging to kept tasks
     if NW_STATE.exists():
         for entry in NW_STATE.iterdir():
             if entry.name not in keep_dir_names:
                 shutil.rmtree(entry)
-                print(f"Removed state: {entry}")
+                log.info("removed state: %s", entry)
 
 
 def clean():
     if NW_GC_LINKS.exists():
         shutil.rmtree(NW_GC_LINKS)
-        print(f"Removed {NW_GC_LINKS}")
+        log.info("removed %s", NW_GC_LINKS)
     subprocess.run(["nix-store", "--gc"], check=True)
     if NW_STAGING.exists():
         shutil.rmtree(NW_STAGING)
-        print(f"Removed {NW_STAGING}")
+        log.info("removed %s", NW_STAGING)
     if NW_STATE.exists():
         shutil.rmtree(NW_STATE)
-        print(f"Removed {NW_STATE}")
+        log.info("removed %s", NW_STATE)
     if NW_STORE.exists():
         shutil.rmtree(NW_STORE)
-        print(f"Removed {NW_STORE}")
+        log.info("removed %s", NW_STORE)
     if DB_PATH.exists():
         DB_PATH.unlink()
-        print(f"Removed {DB_PATH}")
+        log.info("removed %s", DB_PATH)
     out = Path(OUTPUT)
     if out.exists():
         shutil.rmtree(out)
-        print(f"Removed {out}")
+        log.info("removed %s", out)
 
 
 def main():
     args = parse_args()
+    level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(level=level, format="%(message)s")
     if args.command == "run":
         run_workflow(args.path)
     elif args.command == "gc":
