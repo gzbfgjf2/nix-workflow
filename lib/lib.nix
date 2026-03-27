@@ -15,6 +15,15 @@ rec {
         inherit canonical;
         canonicalCmd = cliparser.toCanonicalCommandString canonical;
       }
+    else if builtins.isAttrs arg then
+      let
+        canonical = cliparser.parseCanonicalCliString arg.cmd;
+      in
+      {
+        inherit canonical;
+        canonicalCmd = cliparser.toCanonicalCommandString canonical;
+      }
+      // (if arg ? hash then { inherit (arg) hash; } else { })
     else
       throw "preprocess: expected string or attrset";
 
@@ -71,20 +80,21 @@ rec {
       canonical,
       canonicalCmd,
       name ? "unnamed",
+      hash ? null,
       _untracked ? null,
     }:
     let
       recipe = mkRecipe {
         inherit name;
-        recipeContent = { inherit canonical canonicalCmd; };
+        recipeContent = { inherit canonical canonicalCmd; } // (if hash != null then { inherit hash; } else { });
       };
-      type = "task";
     in
     {
       __toString = self: recipe.taskOutputPath;
-      "__type__" = type;
+      "__type__" = "task";
       inherit
         name
+        hash
         _untracked
         canonical
         canonicalCmd

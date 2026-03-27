@@ -201,6 +201,7 @@ class Task:
     dir_name: str
     nix_var_name: str
     _untracked: Any
+    hash: str | None = None
     requires: set[str] | None = None
     required_by: set[str] | None = None
 
@@ -387,6 +388,7 @@ def extract_task_attrs(js: dict):
                 dir_name=value["dirName"],
                 _untracked=value["_untracked"],
                 nix_var_name=attr,
+                hash=value.get("hash"),
             )
             tasks[value["id"]] = task
     return tasks
@@ -629,27 +631,43 @@ def run_workflow(path):
                 )
                 continue
 
-            # 4. Run task
+            # 4. Pinned hash: skip execution, verify store entry exists
+            if node.hash is not None:
+                content_path = NW_STORE / node.hash
+                if not content_path.exists():
+                    raise FileNotFoundError(
+                        f"pinned hash for '{node.name}' not in store: {node.hash}"
+                    )
+                hash_output = node.hash
+                path_resolved_record(db, path_recipe_resolved, hash_output)
+                drv_resolved_record(
+                    db, node.path_recipe_unresolved, path_recipe_resolved
+                )
+                rewrites[node.task_output_path] = str(content_path)
+                log.info("pinned: %s -> %s", node.name, node.hash)
+                continue
+
+            # 5. Run task
             run_task(node, path_recipe_resolved)
 
-            # 5. Hash output from staging
+            # 6. Hash output from staging
             staging = NW_STAGING / node.dir_name
             hash_output = path_hash(str(staging))
 
-            # 6. Move staging to content store
+            # 7. Move staging to content store
             content_path = str(NW_STORE / hash_output)
             if not Path(content_path).exists():
                 shutil.move(str(staging), content_path)
             else:
                 shutil.rmtree(staging)
 
-            # 7. Record in DB (keyed on built recipe paths)
+            # 8. Record in DB (keyed on built recipe paths)
             path_resolved_record(db, path_recipe_resolved, hash_output)
             drv_resolved_record(
                 db, node.path_recipe_unresolved, path_recipe_resolved
             )
 
-            # 8. Update rewrites for downstream
+            # 9. Update rewrites for downstream
             rewrites[node.task_output_path] = content_path
 
     # Create GC root symlinks
