@@ -137,7 +137,7 @@ def test_extract_static_attrs():
     statics = extract_static_attrs(js)
     assert len(statics) == 1
     s = statics["/nix/store/abc123hash-recipe"]
-    assert s.name == "my_data"
+    assert s.name == "static"
     assert s.path == "/data/dataset"
     assert s.hash == "abc123hash"
     assert s.info == {"description": "test dataset"}

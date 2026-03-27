@@ -355,7 +355,7 @@ def extract_static_attrs(js: dict) -> dict[str, Static]:
     for attr, value in js.items():
         if value.get("__type__") == "static":
             s = Static(
-                name=attr,
+                name="static",
                 path=value.get("path"),
                 hash=value["hash"],
                 info=value.get("info"),
@@ -491,7 +491,7 @@ def run_task(task: Task, path_recipe_resolved: str):
     }
     command = shlex.split(commands)
     print(f"run {staging}")
-    print("running...", command)
+    print("running...", "\n".join(command))
     result = popen_with_stderr_forward(command, env=env)
     print("task completed")
     return result

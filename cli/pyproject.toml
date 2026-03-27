@@ -23,5 +23,8 @@ build-backend = "uv_build"
 line-length = 79
 indent-width = 4
 
+[tool.pytest.ini_options]
+markers = ["integration: tests that require nix to be installed"]
+
 [tool.basedpyright]
 typeCheckingMode = "standard"
