@@ -31,6 +31,21 @@ in
 {
   lib = nwlib;
   env = cli.env;
-  shell = cli.shell;
+  testEnv = cli.testEnv;
+  shell = pkgs.mkShell {
+    inputsFrom = [ cli.shell ];
+    packages = [ 
+      visual.bin 
+      pkgs.fish
+ ];
+    shellHook = ''
+      git config core.hooksPath .githooks
+      exec fish
+    '';
+    env = {
+      # LD_LIBRARY_PATH = "/run/opengl-driver/lib";
+      LD_LIBRARY_PATH="/run/opengl-driver/lib:/run/current-system/sw/share/nix-ld/lib";
+    };
+  };
   visual-shell = visual.shell;
 }

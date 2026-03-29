@@ -4,7 +4,9 @@ const NODE_WIDTH = 200;
 const NODE_HEIGHT = 50;
 const HORIZONTAL_GAP = 60;
 const VERTICAL_GAP = 80;
+const ROW_GAP = VERTICAL_GAP;
 const PADDING = 40;
+const MAX_COLS = 3;
 
 export function computeLayout(data: GraphData): Layout {
   const { nodes, edges } = data;
@@ -13,32 +15,16 @@ export function computeLayout(data: GraphData): Layout {
   }
 
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  const inDegree = new Map<string, number>();
-  const children = new Map<string, string[]>();
-
-  for (const n of nodes) {
-    inDegree.set(n.id, 0);
-    children.set(n.id, []);
-  }
-
-  for (const e of edges) {
-    inDegree.set(e.to, (inDegree.get(e.to) || 0) + 1);
-    children.get(e.from)?.push(e.to);
-  }
-
-  // Assign layers using longest path from roots
   const layers = new Map<string, number>();
   const visited = new Set<string>();
 
   function dfs(id: string): number {
     if (layers.has(id)) return layers.get(id)!;
-    if (visited.has(id)) return 0; // cycle guard
+    if (visited.has(id)) return 0;
     visited.add(id);
-
-    // Find max layer of all parents
     let maxParentLayer = -1;
     for (const e of edges) {
-      if (e.to === id) {
+      if (e.to === id && nodeMap.has(e.from)) {
         maxParentLayer = Math.max(maxParentLayer, dfs(e.from));
       }
     }
@@ -47,11 +33,8 @@ export function computeLayout(data: GraphData): Layout {
     return layer;
   }
 
-  for (const n of nodes) {
-    dfs(n.id);
-  }
+  for (const n of nodes) dfs(n.id);
 
-  // Group nodes by layer
   const layerGroups = new Map<number, string[]>();
   for (const [id, layer] of layers) {
     if (!layerGroups.has(layer)) layerGroups.set(layer, []);
@@ -59,61 +42,63 @@ export function computeLayout(data: GraphData): Layout {
   }
 
   const maxLayer = Math.max(...layerGroups.keys());
-  const maxNodesInLayer = Math.max(
-    ...Array.from(layerGroups.values()).map((g) => g.length)
-  );
-
-  // Position nodes — left-aligned per layer
   const layoutNodes: LayoutNode[] = [];
+
+  // Compute cumulative Y offset per layer, accounting for wrapped rows
+  let currentY = PADDING;
   for (let layer = 0; layer <= maxLayer; layer++) {
     const group = layerGroups.get(layer) || [];
+    const rowCount = Math.ceil(group.length / MAX_COLS);
 
     for (let i = 0; i < group.length; i++) {
+      const col = i % MAX_COLS;
+      const row = Math.floor(i / MAX_COLS);
       const node = nodeMap.get(group[i])!;
       layoutNodes.push({
         id: node.id,
         label: node.label,
-        x: PADDING + i * (NODE_WIDTH + HORIZONTAL_GAP),
-        y: PADDING + layer * (NODE_HEIGHT + VERTICAL_GAP),
+        type: node.type,
+        x: PADDING + col * (NODE_WIDTH + HORIZONTAL_GAP),
+        y: currentY + row * (NODE_HEIGHT + ROW_GAP),
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
       });
     }
+
+    currentY += rowCount * (NODE_HEIGHT + ROW_GAP) - ROW_GAP + VERTICAL_GAP;
   }
 
-  // Build position lookup
   const posMap = new Map(layoutNodes.map((n) => [n.id, n]));
 
-  // Create edges with simple bezier control points
-  const layoutEdges: LayoutEdge[] = edges.map((e) => {
-    const from = posMap.get(e.from)!;
-    const to = posMap.get(e.to)!;
-    const startX = from.x + from.width / 2;
-    const startY = from.y + from.height;
-    const endX = to.x + to.width / 2;
-    const endY = to.y;
-    const midY = (startY + endY) / 2;
+  const layoutEdges: LayoutEdge[] = edges
+    .filter((e) => posMap.has(e.from) && posMap.has(e.to))
+    .map((e) => {
+      const from = posMap.get(e.from)!;
+      const to = posMap.get(e.to)!;
+      const startX = from.x + from.width / 2;
+      const startY = from.y + from.height;
+      const endX = to.x + to.width / 2;
+      const endY = to.y;
+      const midY = (startY + endY) / 2;
 
-    return {
-      from: e.from,
-      to: e.to,
-      points: [
-        { x: startX, y: startY },
-        { x: startX, y: midY },
-        { x: endX, y: midY },
-        { x: endX, y: endY },
-      ],
-    };
-  });
+      return {
+        from: e.from,
+        to: e.to,
+        type: e.type,
+        points: [
+          { x: startX, y: startY },
+          { x: startX, y: midY },
+          { x: endX, y: midY },
+          { x: endX, y: endY },
+        ],
+      };
+    });
 
-  const width =
-    2 * PADDING +
-    maxNodesInLayer * (NODE_WIDTH + HORIZONTAL_GAP) -
-    HORIZONTAL_GAP;
-  const height =
-    2 * PADDING +
-    (maxLayer + 1) * NODE_HEIGHT +
-    maxLayer * VERTICAL_GAP;
+  const maxRight = Math.max(...layoutNodes.map((n) => n.x + n.width), 0);
+  const maxBottom = Math.max(...layoutNodes.map((n) => n.y + n.height), 0);
+
+  const width = maxRight + PADDING;
+  const height = maxBottom + PADDING;
 
   return { nodes: layoutNodes, edges: layoutEdges, width, height };
 }

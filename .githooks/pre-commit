@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -eu
+
+# Auto-format staged Python files with ruff
+staged_py=$(git diff --cached --name-only --diff-filter=ACM -- '*.py')
+if [ -n "$staged_py" ]; then
+    ruff format $staged_py
+    echo "$staged_py" | xargs git add
+fi

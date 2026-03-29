@@ -1,107 +1,212 @@
 import { readdir, readFile, lstat, readlink, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
-function getInputDir() {
-  if (!process.env.DAG_DIR) {
-    console.error("Error: DAG_DIR environment variable is required.\nUsage: DAG_DIR=./nix-workflow-output nw-visual");
-    process.exit(1);
+const execFileAsync = promisify(execFile);
+
+// Resolve sqlite3 binary: use NW_SQLITE3 env var, PATH, or nix-build fallback
+let sqlite3Bin = process.env.NW_SQLITE3 || "sqlite3";
+async function resolveSqlite3() {
+  try {
+    await execFileAsync(sqlite3Bin, ["--version"]);
+  } catch {
+    try {
+      const { stdout } = await execFileAsync("nix-build", [
+        "<nixpkgs>", "-A", "sqlite", "--no-out-link",
+      ]);
+      sqlite3Bin = join(stdout.trim(), "bin", "sqlite3");
+    } catch {}
   }
-  return resolve(process.env.DAG_DIR);
+}
+const sqlite3Ready = resolveSqlite3();
+
+const NW_BASE = "/nix-workflow";
+const NW_STORE = join(NW_BASE, "store");
+const DB_PATH = join(NW_BASE, "db", "db.sqlite");
+
+// Experiment file path — set via setExperimentPath()
+let experimentPath = null;
+
+export function setExperimentPath(path) {
+  experimentPath = path;
 }
 
-async function readDirSafe(p) {
-  try { return await readdir(p); } catch { return []; }
+// Cache
+let graphCache = null;
+let graphCacheTime = 0;
+const CACHE_TTL_MS = 10_000;
+
+async function nixEval(path) {
+  const { stdout } = await execFileAsync("nix", [
+    "eval", "-f", path,
+    "--apply", 'attr: builtins.mapAttrs (_: w: builtins.removeAttrs w ["__toString"]) attr',
+    "--json",
+  ]);
+  return JSON.parse(stdout);
 }
 
-async function readFileSafe(p) {
-  try { return await readFile(p, "utf-8"); } catch { return null; }
+async function nixStoreReferences(storePath) {
+  try {
+    const { stdout } = await execFileAsync("nix-store", [
+      "--query", "--references", storePath,
+    ]);
+    return stdout.trim().split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
-async function scanNodeFolder(fullPath, entry) {
-  const contents = await readdir(fullPath);
-  const files = {};
+async function readRecipeJson(storePath) {
+  try {
+    const content = await readFile(join(storePath, "recipe.json"), "utf-8");
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
 
-  for (const item of contents) {
-    const itemPath = join(fullPath, item);
-    const itemStat = await lstat(itemPath);
+async function dbQuery(sql) {
+  try {
+    await sqlite3Ready;
+    const { stdout } = await execFileAsync(sqlite3Bin, [DB_PATH, "-json", sql]);
+    const trimmed = stdout.trim();
+    if (!trimmed) return [];
+    return JSON.parse(trimmed);
+  } catch {
+    return [];
+  }
+}
 
-    if (itemStat.isSymbolicLink()) {
-      const target = await readlink(itemPath);
-      const fileEntry = { type: "symlink", target };
-      try {
-        const resolved = await stat(itemPath);
-        if (resolved.isDirectory()) {
-          const dirEntries = await readDirSafe(itemPath);
-          fileEntry.resolvedDir = dirEntries;
+async function dbLookupResolved(pathRecipeUnresolved) {
+  const rows = await dbQuery(
+    `SELECT path_recipe_resolved FROM placeholder_to_resolved WHERE path_recipe_unresolved = '${pathRecipeUnresolved}'`,
+  );
+  return rows.length > 0 ? rows[0].path_recipe_resolved : null;
+}
+
+async function dbLookupHashOutput(resolvedPath) {
+  const rows = await dbQuery(
+    `SELECT hash_output FROM realisations WHERE path_recipe_resolved = '${resolvedPath}'`,
+  );
+  return rows.length > 0 ? rows[0].hash_output : null;
+}
+
+async function readResolvedRecipe(resolvedPath) {
+  try {
+    const content = await readFile(resolvedPath, "utf-8");
+    return JSON.parse(content);
+  } catch {}
+  return null;
+}
+
+async function buildGraphFresh() {
+  if (!experimentPath) {
+    return { nodes: [], edges: [] };
+  }
+
+  const evalResult = await nixEval(experimentPath);
+  const nodes = [];
+  const edges = [];
+  const edgeSet = new Set();
+
+  // Extract tasks from eval result
+  const tasks = {};
+  for (const [attr, value] of Object.entries(evalResult)) {
+    if (!["task", "static"].includes(value?.__type__)) continue;
+    tasks[attr] = value;
+  }
+
+  // Build path-to-attr map first (needed for edge lookup)
+  const pathRecipeUnresolvedToAttr = {};
+  for (const [attr, task] of Object.entries(tasks)) {
+    pathRecipeUnresolvedToAttr[task.pathRecipeUnresolved] = attr;
+  }
+
+  // Build recipe nodes
+  for (const [attr, task] of Object.entries(tasks)) {
+    const pathRecipeUnresolved = task.pathRecipeUnresolved;
+
+    const recipe = await readRecipeJson(pathRecipeUnresolved);
+
+    // Lookup resolved recipe and hash via DB
+    const resolvedPath = await dbLookupResolved(pathRecipeUnresolved);
+    let contentHash = null;
+    let resolvedRecipe = null;
+    if (resolvedPath) {
+      contentHash = await dbLookupHashOutput(resolvedPath);
+      resolvedRecipe = await readResolvedRecipe(resolvedPath);
+    }
+    const contentPath = contentHash ? join(NW_STORE, contentHash) : null;
+
+    nodes.push({
+      id: attr,
+      label: attr,
+      type: "recipe",
+      storePath: pathRecipeUnresolved,
+      recipe: recipe || null,
+      contentPath,
+      contentHash,
+    });
+
+    // Recipe dependency edges via nix-store references
+    const refs = await nixStoreReferences(pathRecipeUnresolved);
+    for (const ref of refs) {
+      const depAttr = pathRecipeUnresolvedToAttr[ref];
+      if (depAttr && depAttr !== attr) {
+        const key = `${depAttr}->${attr}`;
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          edges.push({ from: depAttr, to: attr, type: "recipe" });
         }
-      } catch { /* target not accessible */ }
-      files[item] = fileEntry;
-    } else if (itemStat.isDirectory()) {
-      const subEntries = await readDirSafe(itemPath);
-      const links = [];
-      for (const sub of subEntries) {
-        const subPath = join(itemPath, sub);
-        try {
-          const s = await lstat(subPath);
-          if (s.isSymbolicLink()) links.push(sub);
-        } catch { /* skip */ }
       }
-      files[item] = { type: "directory", children: links };
-    } else if (itemStat.isFile()) {
-      const content = await readFileSafe(itemPath);
-      files[item] = { type: "file", content };
+    }
+
+    // Resolved node
+    if (resolvedPath) {
+      const resolvedId = `${attr}:resolved`;
+      nodes.push({
+        id: resolvedId,
+        label: `${attr} (resolved)`,
+        type: "resolved",
+        drvPath: resolvedPath,
+        contentPath,
+        contentHash,
+        resolvedRecipe,
+      });
+
+      // Cross-edge
+      edges.push({ from: attr, to: resolvedId, type: "cross" });
     }
   }
 
-  let label = entry;
-  if (files["task.json"] && files["task.json"].content) {
-    try {
-      const taskData = JSON.parse(files["task.json"].content);
-      label = taskData.nix_var_name || entry;
-    } catch { /* skip */ }
+  // Derive resolved edges from unresolved recipe edges:
+  // if unresolved_A -> unresolved_B, then resolved_A -> resolved_B
+  for (const edge of edges) {
+    if (edge.type !== "recipe") continue;
+    const fromResolved = `${edge.from}:resolved`;
+    const toResolved = `${edge.to}:resolved`;
+    // Only add if both resolved nodes exist
+    if (nodes.some((n) => n.id === fromResolved) && nodes.some((n) => n.id === toResolved)) {
+      const key = `${fromResolved}->${toResolved}`;
+      if (!edgeSet.has(key)) {
+        edgeSet.add(key);
+        edges.push({ from: fromResolved, to: toResolved, type: "resolved" });
+      }
+    }
   }
 
-  return { id: entry, label, files };
+  return { nodes, edges };
 }
 
 export async function buildGraph() {
-  const entries = await readdir(getInputDir());
-  const nodes = {};
-  const edges = [];
-
-  for (const entry of entries) {
-    const fullPath = join(getInputDir(), entry);
-    try {
-      const s = await stat(fullPath);
-      if (!s.isDirectory()) continue;
-    } catch { continue; }
-
-    nodes[entry] = await scanNodeFolder(fullPath, entry);
+  const now = Date.now();
+  if (graphCache && now - graphCacheTime < CACHE_TTL_MS) {
+    return graphCache;
   }
-
-  const edgeSet = new Set();
-  for (const [nodeId, node] of Object.entries(nodes)) {
-    const requiresDir = node.files["requires"];
-    if (requiresDir && requiresDir.type === "directory") {
-      for (const dep of requiresDir.children) {
-        if (nodes[dep]) {
-          const key = `${dep}->${nodeId}`;
-          if (!edgeSet.has(key)) { edgeSet.add(key); edges.push({ from: dep, to: nodeId }); }
-        }
-      }
-    }
-    const requiredByDir = node.files["required_by"];
-    if (requiredByDir && requiredByDir.type === "directory") {
-      for (const dep of requiredByDir.children) {
-        if (nodes[dep]) {
-          const key = `${nodeId}->${dep}`;
-          if (!edgeSet.has(key)) { edgeSet.add(key); edges.push({ from: nodeId, to: dep }); }
-        }
-      }
-    }
-  }
-
-  return { nodes: Object.values(nodes), edges };
+  graphCache = await buildGraphFresh();
+  graphCacheTime = now;
+  return graphCache;
 }
 
 export async function listPath(reqPath) {

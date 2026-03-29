@@ -18,12 +18,24 @@ export interface DirEntry {
 export interface GraphNode {
   id: string;
   label: string;
-  files: Record<string, FileEntry>;
+  type: "recipe" | "resolved" | "output";
+  storePath?: string;
+  drvPath?: string;
+  canonicalCmd?: string | null;
+  recipe?: Record<string, unknown> | null;
+  contentPath?: string | null;
+  contentHash?: string | null;
+  resolvedRecipe?: {
+    canonical: Record<string, unknown>;
+    canonicalCmd: string;
+    out: string;
+  } | null;
 }
 
 export interface GraphEdge {
   from: string;
   to: string;
+  type: "recipe" | "resolved" | "cross";
 }
 
 export interface GraphData {
@@ -34,6 +46,7 @@ export interface GraphData {
 export interface LayoutNode {
   id: string;
   label: string;
+  type: "recipe" | "resolved" | "output";
   x: number;
   y: number;
   width: number;
@@ -43,6 +56,7 @@ export interface LayoutNode {
 export interface LayoutEdge {
   from: string;
   to: string;
+  type: "recipe" | "resolved" | "cross";
   points: { x: number; y: number }[];
 }
 

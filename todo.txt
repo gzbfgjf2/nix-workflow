@@ -1,0 +1,4 @@
+- cli_parser.nix: add support for bare long flags (--flag without =value)
+- rename cli (nw) to something more descriptive
+- lib/lib.nix: clean up `if hash != null then { inherit hash; } else { }` pattern in process/mkRecipe
+- main.py nix_eval --apply: clean up `if w ? "__toString" then builtins.removeAttrs w [...] else w` inline Nix expression (line 248)

@@ -38,13 +38,16 @@ let
   env = pythonSet.mkVirtualEnv "nix-workflow-env" (
     workspace.deps.default
   );
+  testEnv = pythonSet.mkVirtualEnv "nix-workflow-test-env" (
+    workspace.deps.all
+  );
 
 in
 {
-  inherit env;
+  inherit env testEnv;
   shell = pkgs.mkShell {
     packages = [
-      env
+      testEnv
       pkgs.uv
       pkgs.fish
     ];

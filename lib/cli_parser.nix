@@ -254,49 +254,14 @@ let
       parsed = go subParsed.rest false [ ] { } [ ];
 
       flagsCanon = sort parsed.flags;
-      optionKeysSorted = sort (builtins.attrNames parsed.options);
     in
     {
       program = program;
       subcommands = subParsed.subs; # order matters
       flags = flagsCanon; # sorted, duplicates preserved
       options = parsed.options; # "--k" -> [ v1 v2 ] (value order preserved)
-      optionKeysSorted = optionKeysSorted; # deterministic ordering helper
       operands = parsed.operands; # order matters
     };
-
-  # -------------------------
-  # Canonical JSON + hash (preserve string context!)
-  # -------------------------
-
-  # Flatten all strings that may carry context from the canonical structure.
-  canonAllStrings =
-    canon:
-    let
-      optVals = builtins.concatLists (
-        builtins.map (k: canon.options.${k}) canon.optionKeysSorted
-      );
-    in
-    [ canon.program ] ++ canon.subcommands ++ optVals ++ canon.operands;
-
-  toCanonicalJson =
-    canon:
-    let
-      jsonRaw = builtins.toJSON {
-        program = canon.program;
-        subcommands = canon.subcommands;
-        flags = canon.flags;
-        options = canon.options;
-        operands = canon.operands;
-      };
-
-      ctx = collectCtxFromStrings (canonAllStrings canon);
-    in
-    # JSON itself must carry dependency context too.
-    builtins.appendContext jsonRaw ctx;
-
-  canonicalHashSha256 =
-    canon: builtins.hashString "sha256" (toCanonicalJson canon);
 
   # -------------------------
   # Canonical command string (round-trippable + preserves context)
@@ -318,7 +283,7 @@ let
             vs = canon.options.${k};
           in
           builtins.map (v: k + "=" + shellQuote v) vs
-        ) canon.optionKeysSorted
+        ) (builtins.attrNames canon.options)
       );
 
       opToks =
@@ -347,8 +312,6 @@ in
   inherit
     tokenizeShlex
     parseCanonicalCliString
-    toCanonicalJson
-    canonicalHashSha256
     toCanonicalCommandString
     shellQuote
     attachRelevantContext

@@ -1,10 +1,13 @@
-import { buildGraph, listPath, readPath } from "./api-core.mjs";
+import { buildGraph, listPath, readPath, setExperimentPath } from "./api-core.mjs";
 
 /** Vite plugin that adds API routes */
 export function apiPlugin() {
   return {
     name: "nix-workflow-api",
     configureServer(server) {
+      if (process.env.NW_EXPERIMENT) {
+        setExperimentPath(process.env.NW_EXPERIMENT);
+      }
       server.middlewares.use(async (req, res, next) => {
         if (!req.url.startsWith("/api/")) return next();
 

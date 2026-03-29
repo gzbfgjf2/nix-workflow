@@ -16,10 +16,11 @@ let
   };
 
   nw-visual = pkgs.writeShellScriptBin "nw-visual" ''
-    if [ -z "$DAG_DIR" ]; then
-      echo "DAG_DIR is required. Usage: DAG_DIR=./nix-workflow-output nw-visual"
+    if [ -z "$1" ]; then
+      echo "Usage: nw-visual <experiment.nix>"
       exit 1
     fi
+    export NW_EXPERIMENT="$1"
     exec ${pkgs.nodejs}/bin/node ${visual}/lib/nix-workflow-visual/server/standalone.mjs
   '';
 in
