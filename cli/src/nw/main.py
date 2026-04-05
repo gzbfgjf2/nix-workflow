@@ -879,14 +879,17 @@ def main():
     args = parse_args()
     level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(level=level, format="%(message)s")
-    if args.command == "run":
-        run_workflow(args.path)
-    elif args.command == "gc":
-        gc(args.path, args.attrs)
-    elif args.command == "prune":
-        prune(args.paths)
-    elif args.command == "clean":
-        clean()
+    try:
+        if args.command == "run":
+            run_workflow(args.path)
+        elif args.command == "gc":
+            gc(args.path, args.attrs)
+        elif args.command == "prune":
+            prune(args.paths)
+        elif args.command == "clean":
+            clean()
+    except subprocess.CalledProcessError as e:
+        sys.exit(e.returncode)
 
 
 if __name__ == "__main__":
