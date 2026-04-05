@@ -1,7 +1,10 @@
 nix-workflow
 ============
 
-A functional-oriented workflow manager that pins exact runtime environments.
+Pin, run, and manage your entire ML workflow from a single composable Nix file.
+
+A functional-oriented workflow manager with the simplest possible experiment
+declaration.
 
 Pinned environments
 -------------------
@@ -44,3 +47,4 @@ haven't changed.
 
    getting-started
    concepts
+   api

@@ -1,10 +1,15 @@
 import sqlite3
+import subprocess
+import sys
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 from nw.main import (
     cmd_resolve,
     extract_static_attrs,
     extract_task_attrs,
+    main,
     process_static,
     run_workflow,
     topological_sort,
@@ -451,3 +456,20 @@ def test_run_workflow_pinned_hash_present_skips_execution(tmp_path):
     _run_workflow_mocked(task, store, gc_links, mock_run_task)
 
     mock_run_task.assert_not_called()
+
+
+def test_main_exits_with_subprocess_returncode(monkeypatch):
+    """main() exits with the subprocess return code on task failure, no traceback."""
+    monkeypatch.setattr(sys, "argv", ["nw", "run", "experiment.nix"])
+    exc = subprocess.CalledProcessError(42, ["some-command"])
+    with patch("nw.main.run_workflow", side_effect=exc):
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+    assert exc_info.value.code == 42
+
+
+def test_main_exits_zero_on_success(monkeypatch):
+    """main() exits normally when run_workflow succeeds."""
+    monkeypatch.setattr(sys, "argv", ["nw", "run", "experiment.nix"])
+    with patch("nw.main.run_workflow"):
+        main()  # should not raise
