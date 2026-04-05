@@ -2,38 +2,6 @@
 
 ---
 
-## Improvement 1: Pinned Hash Ergonomics [URGENT]
-
-Two gaps in the current `hash` pin on `output`:
-
-### 1. No integrity verification
-
-When a pinned hash is used, the CLI only checks that
-`/nix-workflow/store/{hash}/` exists — it never re-hashes the content to
-confirm it matches. Corrupt or manually-placed wrong content is silently
-accepted.
-
-**Fix:** on first use of a pin, run `nix hash path --base32` on the store
-entry and assert it equals the declared hash. Error loudly if it does not.
-
-### 2. No way to get the hash without Nix internals
-
-There is no user-facing command to compute the content hash of a path. Users
-must know to run `nix hash path --base32 <path>` manually.
-
-**Fix:** add a `nw hash <path>` subcommand that prints the nix32 content hash,
-ready to paste into the nix file:
-
-```bash
-nw hash /nix-workflow/store/abc123.../
-# → abc123...
-```
-
-Also print the hash prominently after every successful task run so users can
-pin it immediately without a separate command.
-
----
-
 ## Feature 1: Selective Execution
 
 Run a single named output and only its transitive dependencies.
