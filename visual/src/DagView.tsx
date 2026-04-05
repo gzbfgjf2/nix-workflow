@@ -1,5 +1,16 @@
 import type { GraphNode, Layout } from "./types";
 
+const LABEL_MAX_CHARS = 22;
+
+function truncateLabel(label: string): string {
+  if (label.length <= LABEL_MAX_CHARS) return label;
+  // Try to break at a word boundary
+  const truncated = label.slice(0, LABEL_MAX_CHARS);
+  const lastSpace = truncated.lastIndexOf("_");
+  const cut = lastSpace > LABEL_MAX_CHARS / 2 ? lastSpace : LABEL_MAX_CHARS;
+  return label.slice(0, cut) + "…";
+}
+
 interface Props {
   layout: Layout;
   viewMode: "ca" | "recipe";
@@ -42,14 +53,14 @@ export function DagView({ layout, viewMode, selectedNode, connectedNodes, linked
         <marker id="arrow-ca" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
           <polygon points="0 0, 6 2, 0 4" fill="#3b82f6" />
         </marker>
-        <marker id="arrow-ca-hl" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
-          <polygon points="0 0, 6 2, 0 4" fill="#1d4ed8" />
+        <marker id="arrow-ca-hl" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#1d4ed8" />
         </marker>
         <marker id="arrow-recipe" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
           <polygon points="0 0, 6 2, 0 4" fill="#ea580c" />
         </marker>
-        <marker id="arrow-recipe-hl" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
-          <polygon points="0 0, 6 2, 0 4" fill="#c2410c" />
+        <marker id="arrow-recipe-hl" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#c2410c" />
         </marker>
       </defs>
 
@@ -76,7 +87,7 @@ export function DagView({ layout, viewMode, selectedNode, connectedNodes, linked
             d={d}
             fill="none"
             stroke={color}
-            strokeWidth={0.75}
+            strokeWidth={isHighlighted ? 3 : 0.75}
             markerEnd={marker}
           />
         );
@@ -116,6 +127,7 @@ export function DagView({ layout, viewMode, selectedNode, connectedNodes, linked
             onClick={() => onSelectNode(node.id)}
             style={{ cursor: "pointer" }}
           >
+            <title>{node.label}</title>
             <clipPath id={clipId}>
               <rect x={node.x + 8} y={node.y} width={node.width - 16} height={node.height} />
             </clipPath>
@@ -140,7 +152,7 @@ export function DagView({ layout, viewMode, selectedNode, connectedNodes, linked
               fontFamily="system-ui, sans-serif"
               clipPath={`url(#${clipId})`}
             >
-              {node.label}
+              {truncateLabel(node.label)}
             </text>
           </g>
         );

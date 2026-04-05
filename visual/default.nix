@@ -4,7 +4,7 @@ let
     pname = "nix-workflow-visual";
     version = "0.0.1";
     src = ./.;
-    npmDepsHash = "sha256-eHwKRqaG7/CpQ+fV0VFck+e3d94QXm0ke1SljHJXGYQ=";
+    npmDepsHash = "sha256-MEj7jcnslV9KdsoJf84tdkjnzQG85ffTWxGM9wazAyo=";
     buildPhase = ''
       npm run build
     '';
