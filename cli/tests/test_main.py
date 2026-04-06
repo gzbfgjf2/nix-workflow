@@ -453,7 +453,28 @@ def test_run_workflow_pinned_hash_present_skips_execution(tmp_path):
     task = _make_pinned_task(hash_val=hash_val)
     mock_run_task = MagicMock()
 
-    _run_workflow_mocked(task, store, gc_links, mock_run_task)
+    with patch("nw.main.path_hash", return_value=hash_val):
+        _run_workflow_mocked(task, store, gc_links, mock_run_task)
+
+    mock_run_task.assert_not_called()
+
+
+def test_run_workflow_pinned_hash_integrity_mismatch(tmp_path):
+    """Pinned task whose store content hash differs from declared hash raises ValueError."""
+    store = tmp_path / "store"
+    store.mkdir()
+    gc_links = tmp_path / "gc-links"
+    gc_links.mkdir()
+
+    hash_val = "declaredhash"
+    (store / hash_val).mkdir()
+
+    task = _make_pinned_task(hash_val=hash_val)
+    mock_run_task = MagicMock()
+
+    with pytest.raises(ValueError, match="does not match store content"):
+        with patch("nw.main.path_hash", return_value="actuallydifferenthash"):
+            _run_workflow_mocked(task, store, gc_links, mock_run_task)
 
     mock_run_task.assert_not_called()
 
@@ -473,3 +494,11 @@ def test_main_exits_zero_on_success(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["nw", "run", "experiment.nix"])
     with patch("nw.main.run_workflow"):
         main()  # should not raise
+
+
+def test_main_hash_prints_hash(monkeypatch, capsys):
+    """nw hash <path> prints the nix32 content hash."""
+    monkeypatch.setattr(sys, "argv", ["nw", "hash", "/some/path"])
+    with patch("nw.main.path_hash", return_value="abc123hash"):
+        main()
+    assert capsys.readouterr().out.strip() == "abc123hash"

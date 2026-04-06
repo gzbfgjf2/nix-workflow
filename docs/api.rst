@@ -38,21 +38,15 @@ Define a task that runs a command and stores its output content-addressed.
 
 **Arguments (attrset form):**
 
-.. list-table::
-   :header-rows: 1
-   :widths: 20 10 70
+``cmd`` *(required)*
+    The command string, same as the string form.
 
-   * - Field
-     - Required
-     - Description
-   * - ``cmd``
-     - yes
-     - The command string, same as the string form.
-   * - ``hash``
-     - no
-     - Content hash of a known output. If provided, nix-workflow skips
-       execution and uses ``/nix-workflow/store/{hash}`` directly. Raises an
-       error if the store entry does not exist.
+``hash`` *(optional)*
+    Content hash of a known output. If provided, nix-workflow skips execution
+    and uses ``/nix-workflow/store/{hash}`` directly. The store entry is
+    re-hashed on each use to verify integrity. Raises an error if the store
+    entry does not exist or its content does not match the declared hash.
+    Use ``nw hash <path>`` to compute the hash of an existing path.
 
 **Returns:** an attrset with ``__toString`` returning a placeholder path.
 Use it via string interpolation in downstream tasks:
@@ -63,16 +57,11 @@ A persistent state directory is available at ``$state``.
 
 **Environment variables available to the task:**
 
-.. list-table::
-   :header-rows: 1
-   :widths: 20 80
+``out``
+    Staging directory. Write all task outputs here.
 
-   * - Variable
-     - Description
-   * - ``out``
-     - Staging directory. Write all task outputs here.
-   * - ``state``
-     - Persistent state directory across runs (same task identity = same path).
+``state``
+    Persistent state directory across runs (same task identity = same path).
 
 ``static``
 ~~~~~~~~~~
@@ -84,30 +73,21 @@ running a command.
 
    my_data = static {
      path = "/absolute/path/to/data";  # optional if already in store
-     hash = "0abc123...";              # nix hash path --base32 <path>
+     hash = "0abc123...";              # nw hash <path>
      info = { description = "..."; };  # optional metadata
    };
 
 **Arguments:**
 
-.. list-table::
-   :header-rows: 1
-   :widths: 20 10 70
+``hash`` *(required)*
+    Content hash of the file or directory. Compute with ``nw hash <path>``.
 
-   * - Field
-     - Required
-     - Description
-   * - ``hash``
-     - yes
-     - Content hash of the file or directory. Compute with
-       ``nix hash path --base32 <path>``.
-   * - ``path``
-     - no
-     - Absolute path to the source. Required on first use; can be omitted if
-       the hash is already in the store.
-   * - ``info``
-     - no
-     - Arbitrary attrset of metadata (description, source URL, etc.).
+``path`` *(optional)*
+    Absolute path to the source. Required on first use; can be omitted if
+    the hash is already in the store.
+
+``info`` *(optional)*
+    Arbitrary attrset of metadata (description, source URL, etc.).
 
 **Returns:** an attrset with ``__toString`` returning
 ``/nix-workflow/store/{hash}``. Use via string interpolation:
@@ -157,6 +137,33 @@ Removes GC roots, database entries, and content store entries for any task
 not present in the listed files. Useful for cleaning up experiments that are
 no longer needed.
 
+``nw hash``
+~~~~~~~~~~~
+
+Print the nix32 content hash of a file or directory. The hash is computed
+using the same algorithm used internally for content-addressed storage, so the
+output can be pasted directly into a ``hash`` field in your workflow file.
+
+.. code-block:: sh
+
+   nw hash <path>
+
+**Example workflow for pinning a task output:**
+
+.. code-block:: sh
+
+   nw run experiment.nix          # run once, output lands in /nix-workflow/store/abc123.../
+   nw hash /nix-workflow/store/abc123.../   # prints: abc123...
+
+Then in your nix file:
+
+.. code-block:: nix
+
+   model = output {
+     cmd  = ''train --data=${dataset}'';
+     hash = "abc123...";   # pinned — execution skipped, integrity verified on each run
+   };
+
 ``nw clean``
 ~~~~~~~~~~~~
 
@@ -169,11 +176,5 @@ directories, content store, and database.
 
 **Flags:**
 
-.. list-table::
-   :header-rows: 1
-   :widths: 20 80
-
-   * - Flag
-     - Description
-   * - ``--debug``
-     - Enable debug logging (nix commands, recipe contents, dependency graph).
+``--debug``
+    Enable debug logging (nix commands, recipe contents, dependency graph).

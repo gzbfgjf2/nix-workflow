@@ -234,6 +234,11 @@ def parse_args():
 
     subparsers.add_parser("clean", help="Remove all outputs, gc-links, and DB")
 
+    hash_parser = subparsers.add_parser(
+        "hash", help="Print nix32 content hash of a path"
+    )
+    hash_parser.add_argument("path", type=str, help="Path to hash")
+
     args = parser.parse_args()
     return args
 
@@ -631,12 +636,18 @@ def run_workflow(path):
                 )
                 continue
 
-            # 4. Pinned hash: skip execution, verify store entry exists
+            # 4. Pinned hash: skip execution, verify store entry exists + integrity
             if node.hash is not None:
                 content_path = NW_STORE / node.hash
                 if not content_path.exists():
                     raise FileNotFoundError(
                         f"pinned hash for '{node.name}' not in store: {node.hash}"
+                    )
+                actual_hash = path_hash(str(content_path))
+                if actual_hash != node.hash:
+                    raise ValueError(
+                        f"pinned hash for '{node.name}' does not match store content: "
+                        f"declared {node.hash}, got {actual_hash}"
                     )
                 hash_output = node.hash
                 path_resolved_record(db, path_recipe_resolved, hash_output)
@@ -888,6 +899,8 @@ def main():
             prune(args.paths)
         elif args.command == "clean":
             clean()
+        elif args.command == "hash":
+            print(path_hash(args.path))
     except subprocess.CalledProcessError as e:
         sys.exit(e.returncode)
 
