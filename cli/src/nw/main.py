@@ -303,7 +303,11 @@ def popen_with_stderr_forward(command: list[str], env=None) -> list[bytes]:
         if rc != 0:
             raise subprocess.CalledProcessError(rc, command)
     except subprocess.CalledProcessError as e:
-        log.debug("command failed (rc=%d)", e.returncode)
+        log.error(
+            "command failed (rc=%d): %s",
+            e.returncode,
+            " ".join(str(a) for a in command),
+        )
         raise
     return b"".join(stdout_chunks).splitlines()
 
@@ -330,7 +334,7 @@ def nix_build_recipes(nodes):
 def setup_local_output(nodes, rewrites):
     local_folder = Path(OUTPUT)
     local_folder.mkdir(exist_ok=True, parents=True)
-    for node_id, node in nodes.items():
+    for node in nodes.values():
         link = local_folder / node.nix_var_name
         target = rewrites.get(node.task_output_path, node.task_output_path)
         if link.is_symlink():
@@ -731,7 +735,7 @@ def gc(path, attrs):
     }
 
     # 1. Delete GC root symlinks for recipe and resolved recipe
-    for task_id, task in tasks_to_gc.items():
+    for task in tasks_to_gc.values():
         gc_link_recipe = NW_GC_LINKS / f"{task.dir_name}-recipe"
         if gc_link_recipe.exists():
             gc_link_recipe.unlink()
@@ -761,7 +765,7 @@ def gc(path, attrs):
     rows = db.execute(
         "SELECT path_recipe_resolved, hash_output FROM realisations"
     ).fetchall()
-    for resolved, h in rows:
+    for resolved, _ in rows:
         if not Path(resolved).exists():
             db.execute(
                 "DELETE FROM realisations WHERE path_recipe_resolved = ?",
