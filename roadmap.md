@@ -229,3 +229,14 @@ nw run experiment.nix
 - Multi-machine parallelism
 - Shared NFS / S3 store backend
 - Authentication / key management
+
+---
+
+## Cleanup
+
+Small improvements that don't warrant a full feature branch.
+
+- **`cli_parser.nix`** — add support for bare long flags (`--flag` without `=value`)
+- **Rename CLI** — `nw` is terse; consider a more descriptive name
+- **`lib/lib.nix`** — simplify the `if hash != null then { inherit hash; } else { }` pattern in `process`/`mkRecipe`
+- **`main.py` `nix_eval --apply`** — extract the inline `if w ? "__toString" then builtins.removeAttrs w [...] else w` Nix expression (line ~248) into a named helper
